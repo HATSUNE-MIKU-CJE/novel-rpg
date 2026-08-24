@@ -1,11 +1,13 @@
 <script setup lang="ts">
-import { ref, computed } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { db } from '../db'
 import { useDataStore } from '../stores/data'
 import { useChatStore } from '../stores/chat'
 import { BUILTIN_NODES } from '../engine/builtinNodes'
 import { DEEPSEEK_PRICES, isPeakHour, PRICE_SOURCE_DATE } from '../engine/pricing'
+import { checkForUpdate, UPDATE_REPO } from '../engine/updater'
 import PresetPanel from './PresetPanel.vue'
+import UpdaterCard from './UpdaterCard.vue'
 import type { ApiConfig } from '../types'
 
 const ds = useDataStore()
@@ -15,6 +17,14 @@ let t: number | undefined
 function showToast(m: string) { toast.value = m; clearTimeout(t); t = window.setTimeout(() => toast.value = '', 2200) }
 
 const subTab = ref<'api' | 'preset' | 'stats'>('api')
+
+// ---- 启动自动检查更新 ----
+onMountedCheck()
+async function onMountedCheck() {
+  try {
+    await checkForUpdate(UPDATE_REPO, '1.0.1')
+  } catch { /* 静默失败，用户可在设置页手动检查 */ }
+}
 
 // ---- API 配置编辑 ----
 const editing = ref<ApiConfig | null>(null)
@@ -199,6 +209,11 @@ const priceRows = Object.entries(DEEPSEEK_PRICES).map(([model, r]) => ({ model, 
           <button class="btn btn-danger btn-sm" @click="ds.deletePreset(p.id!)">删</button>
         </div>
       </div>
+
+      <div class="section-gap"></div>
+
+      <!-- 版本更新 -->
+      <UpdaterCard />
 
       <div class="section-gap"></div>
 

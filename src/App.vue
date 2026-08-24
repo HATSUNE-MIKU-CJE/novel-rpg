@@ -1,5 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
+import { Capacitor } from '@capacitor/core'
+import { StatusBar } from '@capacitor/status-bar'
 import { useDataStore } from './stores/data'
 import { useChatStore } from './stores/chat'
 import ChatView from './views/ChatView.vue'
@@ -45,6 +47,16 @@ function showToast(msg: string) {
 defineExpose({ showToast })
 
 onMounted(async () => {
+  // 原生端：WebView 不延伸到系统状态栏之下（避免顶栏与时间栏重叠）
+  if (Capacitor.isNativePlatform()) {
+    try {
+      const sb = StatusBar as any
+      await sb.setOverlaysWebView({ overlaysWebView: false })
+      await sb.setBackgroundColor({ color: '#f6f4ef' })
+      // 状态栏不透明 + 深色图标
+      await sb.setStyle({ style: 1 /* Dark */ })
+    } catch { /* 兜底：CSS safe-area 已处理 */ }
+  }
   await ds.init()
   // 默认打开最近活跃存档
   const recent = ds.campaigns.sort((a, b) => b.lastActive - a.lastActive)[0]

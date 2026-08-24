@@ -49,6 +49,8 @@ body {
   font-size: 15px;
   line-height: 1.65;
   overscroll-behavior: none;
+  /* 原生端 WebView 安全区（如 StatusBar 插件失效时的兜底） */
+  padding-top: env(safe-area-inset-top, 0px);
 }
 
 button { font-family: inherit; cursor: pointer; border: none; background: none; }
@@ -127,9 +129,10 @@ textarea { resize: vertical; min-height: 60px; }
 
 /* ---------- 对话页 ---------- */
 .chat-header {
-  position: sticky; top: 0; z-index: 20;
+  position: sticky; top: env(safe-area-inset-top, 0px); z-index: 20;
   display: flex; align-items: center; gap: 10px;
   padding: 10px 14px;
+  padding-top: calc(10px + env(safe-area-inset-top, 0px));
   background: rgba(246,244,239,.92);
   backdrop-filter: blur(10px);
   border-bottom: 1px solid var(--line);
@@ -139,7 +142,7 @@ textarea { resize: vertical; min-height: 60px; }
 
 /* 快捷工具栏（模式切换 + 压缩） */
 .quickbar {
-  position: sticky; top: 54px; z-index: 19;
+  position: sticky; top: calc(54px + env(safe-area-inset-top, 0px)); z-index: 19;
   display: flex; align-items: center; justify-content: space-between; gap: 8px;
   padding: 6px 12px;
   background: rgba(246,244,239,.92);
