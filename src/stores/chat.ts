@@ -8,6 +8,7 @@ import { parseDreamPlot } from '../engine/dreamParser'
 import { buildDreamPromptBlocks, defaultDreamConfig, type DreamConfig } from '../engine/dreamPreset'
 import { parseUsage, estimateCostYuan } from '../engine/pricing'
 import { extractFacts } from '../engine/extractor'
+import { httpFetch } from '../engine/http'
 
 /** 剥离 Vue 响应式代理，得到 IndexedDB 可序列化的纯对象 */
 function plainMsg<T>(obj: T): T {
@@ -479,7 +480,7 @@ async function chatCompletionFull(api: ApiConfig, messages: ChatUserMessage[]): 
   const maxTokens = api.maxTokens ?? 4000
   if (maxTokens > 0) body.max_tokens = maxTokens
 
-  const resp = await fetch(`${base}/chat/completions`, {
+  const resp = await httpFetch(`${base}/chat/completions`, {
     method: 'POST',
     headers,
     body: JSON.stringify(body),

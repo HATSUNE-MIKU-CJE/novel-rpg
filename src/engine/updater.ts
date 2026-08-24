@@ -8,6 +8,7 @@
 
 import { Capacitor } from '@capacitor/core'
 import { Filesystem, Directory, Encoding } from '@capacitor/filesystem'
+import { httpFetch } from './http'
 
 /** GitHub 仓库（更新源）—— 从 package.json 的 repository 或常量读取 */
 export const UPDATE_REPO = 'HATSUNE-MIKU-CJE/novel-rpg'
@@ -57,7 +58,7 @@ export async function checkForUpdate(
   const m = repo.match(OWNER_REPO_RE)
   if (!m) throw new Error('仓库格式错误：应为 owner/repo')
 
-  const resp = await fetch(`https://api.github.com/repos/${repo}/releases/latest`, {
+  const resp = await httpFetch(`https://api.github.com/repos/${repo}/releases/latest`, {
     headers: { Accept: 'application/vnd.github+json' },
   })
   if (resp.status === 404) {
@@ -86,6 +87,8 @@ export async function checkForUpdate(
 
 /** 应用内下载 APK → 本地 Cache 文件，返回本地 uri（原生拉起用） */
 export async function downloadApk(url: string, version: string): Promise<{ uri: string; name: string }> {
+  // 下载保持标准 fetch：GitHub 资产直链有 CORS 头，WebView 可过；
+  // CapacitorHttp 对二进制需要特殊 responseType，这里走浏览器通道更稳
   const resp = await fetch(url)
   if (!resp.ok) throw new Error(`下载失败：HTTP ${resp.status}`)
   const blob = await resp.blob()

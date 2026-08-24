@@ -12,6 +12,7 @@
  */
 
 import { expandMacros, type MacroCtx } from './macros'
+import { httpFetch } from './http'
 import type { Campaign, Message, ApiConfig, Entry } from '../types'
 
 export interface ChatUserMessage {
@@ -129,7 +130,7 @@ export async function chatCompletion(
   const maxTokens = api.maxTokens ?? 4000
   if (maxTokens > 0) body.max_tokens = maxTokens
 
-  const resp = await fetch(`${base}/chat/completions`, {
+  const resp = await httpFetch(`${base}/chat/completions`, {
     method: 'POST',
     headers,
     body: JSON.stringify(body),
