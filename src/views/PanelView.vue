@@ -5,6 +5,7 @@ import { useDataStore } from '../stores/data'
 import { useChatStore } from '../stores/chat'
 import { formatSpecMarkdown, formatSpecSchema } from '../engine/specExport'
 import { exportFile } from '../engine/exportFile'
+import { CATEGORIES, type AttrSchema } from '../engine/extractor'
 import RelationGraph from './RelationGraph.vue'
 import CharacterDetail from './CharacterDetail.vue'
 import type { Character, Relation, Worldbook, Entry } from '../types'
@@ -12,7 +13,7 @@ import type { Character, Relation, Worldbook, Entry } from '../types'
 const ds = useDataStore()
 const chat = useChatStore()
 
-const tab = ref<'chars' | 'rels' | 'worlds' | 'vars'>('chars')
+const tab = ref<'chars' | 'rels' | 'world' | 'config'>('chars')
 const characters = ref<Character[]>([])
 const relations = ref<Relation[]>([])
 const showImportModal = ref(false)
@@ -37,9 +38,22 @@ const editWb = ref<Worldbook | null>(null)
 const showEntryEditor = ref(false)
 const showWbEditor = ref(false)
 
+// ---- 顶部：存档切换 ----
+const showCampaigns = ref(false)
+const campaignName = computed(() => chat.currentCampaign?.name || '未选择存档')
+async function switchCampaign(id: number) {
+  await chat.openCampaign(id)
+  showCampaigns.value = false
+  await refreshChars()
+  await refreshPending()
+  await refreshBindings()
+}
+
 onMounted(() => refreshChars())
 watch(() => chat.currentCampaignId, () => refreshChars())
 watch(() => ds.entries.length, () => refreshPending())
+
+const schema = computed(() => chat.attrSchema())
 
 async function refreshChars() {
   const cid = chat.currentCampaignId
@@ -52,6 +66,40 @@ async function refreshChars() {
 const notebook = computed<Worldbook | null>(() => {
   const id = chat.currentCampaign?.notebookWorldbookId
   return id ? ds.worldbooks.find((w) => w.id === id) ?? null : null
+})
+
+/** 当前生效的世界书条目（已接受/手动/导入，排除 AI pending 与 rejected） */
+function activeWorldEntries(): Entry[] {
+  const cid = chat.currentCampaignId
+  if (!cid) return []
+  const wbIds = [...bindings.value]
+  if (notebook.value?.id) wbIds.push(notebook.value.id)
+  const out: Entry[] = []
+  for (const wbId of wbIds) {
+    for (const e of ds.entriesOf(wbId)) {
+      if (!e.enabled || !e.content.trim()) continue
+      if (e.source === 'ai' && e.status !== 'accepted') continue
+      out.push(e)
+    }
+  }
+  return out
+}
+
+/** 世界 tab：板块分组（按类别） */
+const worldGroups = computed(() => {
+  const groups: Array<{ category: string; entries: Entry[] }> = []
+  for (const cat of CATEGORIES) {
+    const entries = activeWorldEntries().filter((e) => (e.category || '其他') === cat)
+    if (entries.length) groups.push({ category: cat, entries })
+  }
+  // 不在候选类别的归「其他」
+  const odd = activeWorldEntries().filter((e) => !(CATEGORIES as readonly string[]).includes(e.category || ''))
+  if (odd.length) {
+    const g = groups.find((x) => x.category === '其他')
+    if (g) g.entries.push(...odd)
+    else groups.push({ category: '其他', entries: odd })
+  }
+  return groups
 })
 
 const pendingEntries = ref<Entry[]>([])
@@ -91,6 +139,43 @@ async function acceptAll() {
   for (const e of pendingEntries.value) await acceptEntry(e)
 }
 
+// ---- 属性设定（存档级） ----
+const schemaEdit = ref(false)
+const schemaDraft = ref<AttrSchema>({ dims: [], realmLabel: '' })
+const schemaLoading = ref(false)
+function beginSchemaEdit() {
+  const s = schema.value
+  schemaDraft.value = JSON.parse(JSON.stringify(s))
+  schemaEdit.value = true
+}
+function addDim() {
+  schemaDraft.value.dims.push({ label: '' })
+}
+function delDim(i: number) {
+  schemaDraft.value.dims.splice(i, 1)
+}
+async function saveSchema() {
+  const s = schemaDraft.value
+  await chat.saveAttrSchema({
+    dims: s.dims.filter((d) => d.label.trim()).map((d) => ({ label: d.label.trim() })),
+    realmLabel: (s.realmLabel ?? '').trim(),
+  })
+  schemaEdit.value = false
+  showToast('属性体系已保存')
+}
+async function suggestSchema() {
+  schemaLoading.value = true
+  const s = await chat.suggestAttrSchema()
+  schemaLoading.value = false
+  if (s) {
+    schemaDraft.value = s
+    schemaEdit.value = true
+    showToast('已按交流内容生成建议，确认后保存')
+  } else {
+    showToast(chat.error || '生成失败')
+  }
+}
+
 // ---- 世界书管理 ----
 const wbList = computed(() => ds.worldbooks)
 
@@ -104,6 +189,7 @@ async function saveEntry() {
     updatedAt: Date.now(),
     enabled: e.enabled ? 1 : 0,
     source: e.source || 'manual',
+    category: (e.category || '其他'),
   })
   showEntryEditor.value = false
   editEntry.value = null
@@ -224,22 +310,37 @@ function openEdit(e: Entry) {
   showEntryEditor.value = true
 }
 
-// ---- 角色详情弹层 ----
-const charDetail = ref<Character | null>(null)
-function openDetail(c: Character) { charDetail.value = c }
+// ---- 角色详情（全屏） ----
+const charSheet = ref<Character | null>(null)
+function openDetail(c: Character) { charSheet.value = c }
 async function onCharSaved() { await refreshChars() }
+
+// ---- 轻提示 ----
+const toast = ref('')
+let toastTimer: number | undefined
+function showToast(msg: string) {
+  toast.value = msg
+  clearTimeout(toastTimer)
+  toastTimer = window.setTimeout(() => (toast.value = ''), 2600)
+}
 </script>
 
 <template>
   <div class="page">
-    <div class="page-title">🎭 面板</div>
+    <!-- 顶端栏：标题 + 存档切换 -->
+    <header class="panel-header">
+      <div class="page-title" style="margin:0">🎭 面板</div>
+      <button class="btn btn-soft btn-sm" @click="showCampaigns = true">
+        📖 {{ campaignName }} <span style="opacity:.7">▾</span>
+      </button>
+    </header>
 
-    <!-- 子导航 -->
-    <div style="display:flex; gap:8px; margin-bottom:14px">
+    <!-- 选项栏 -->
+    <div class="panel-tabs">
       <button class="btn btn-sm" :class="tab === 'chars' ? 'btn-primary' : 'btn-ghost'" @click="tab='chars'">👤 角色</button>
       <button class="btn btn-sm" :class="tab === 'rels' ? 'btn-primary' : 'btn-ghost'" @click="tab='rels'">🕸 关系</button>
-      <button class="btn btn-sm" :class="tab === 'worlds' ? 'btn-primary' : 'btn-ghost'" @click="tab='worlds'">📚 世界书</button>
-      <button class="btn btn-sm" :class="tab === 'vars' ? 'btn-primary' : 'btn-ghost'" @click="tab='vars'">🧬 变量</button>
+      <button class="btn btn-sm" :class="tab === 'world' ? 'btn-primary' : 'btn-ghost'" @click="tab='world'">🌍 世界</button>
+      <button class="btn btn-sm" :class="tab === 'config' ? 'btn-primary' : 'btn-ghost'" @click="tab='config'">⚙️ 配置</button>
     </div>
 
     <!-- ===== 角色 ===== -->
@@ -251,7 +352,7 @@ async function onCharSaved() { await refreshChars() }
         <div v-for="c in characters" :key="c.id" class="char-card" @click="openDetail(c)">
           <div class="char-avatar">{{ c.name.slice(0, 1) }}</div>
           <div class="list-title">{{ c.name }}</div>
-          <div class="list-sub">{{ c.identity || '身份未知' }}</div>
+          <div class="list-sub">{{ c.identity || '身份未知' }}<template v-if="c.realm"> · {{ c.realm }}</template></div>
           <div v-if="c.description" class="list-sub" style="margin-top:4px; max-height:44px; overflow:hidden">
             {{ c.description }}
           </div>
@@ -260,10 +361,7 @@ async function onCharSaved() { await refreshChars() }
           </div>
         </div>
       </div>
-      <div
-        v-if="organizeStats"
-        class="list-sub" style="margin-top:10px; text-align:center"
-      >
+      <div v-if="organizeStats" class="list-sub" style="margin-top:10px; text-align:center">
         🕐 上次整理：角色 {{ organizeStats.chars }} · 关系 {{ organizeStats.rels }} · 事实 {{ organizeStats.facts }}
         （{{ new Date(organizeStats.at).toLocaleTimeString() }}）
       </div>
@@ -285,12 +383,88 @@ async function onCharSaved() { await refreshChars() }
       </div>
     </div>
 
-    <!-- ===== 世界书 ===== -->
-    <div v-if="tab === 'worlds'">
-      <!-- 本存档绑定的世界书（会注入对话） -->
+    <!-- ===== 世界 ===== -->
+    <div v-if="tab === 'world'">
+      <!-- 属性设定 -->
+      <div class="card" style="margin-bottom:12px">
+        <div style="display:flex; align-items:center; margin-bottom:6px">
+          <b style="flex:1">🎛 属性设定（存档级）</b>
+          <button class="btn btn-warm btn-sm" :disabled="schemaLoading" style="margin-right:6px" @click="suggestSchema">
+            {{ schemaLoading ? '生成中…' : '🤖 按交流建议' }}
+          </button>
+          <button class="btn btn-ghost btn-sm" @click="beginSchemaEdit">✏️ 编辑</button>
+        </div>
+        <div class="list-sub" style="margin-bottom:6px">
+          本存档的属性维度：<span v-for="d in schema.dims" :key="d.label" class="entry-tag tag-constant" style="margin:2px 3px 0 0">{{ d.label }}</span>
+          <template v-if="schema.realmLabel"> · {{ schema.realmLabel }}：{{ schema.realmLabel }}（角色单个标签，如：金丹期）</template>
+        </div>
+
+        <!-- 编辑/建议预览 -->
+        <div v-if="schemaEdit" class="opt-detail" style="border-top:1px solid var(--line)">
+          <label style="font-size:12.5px; color:var(--accent-deep); font-weight:600; display:block; margin-bottom:6px">维度（4~8 个，可改）</label>
+          <div v-for="(d, i) in schemaDraft.dims" :key="i" class="attr-edit-row">
+            <input v-model="d.label" placeholder="维度名" style="flex:1" />
+            <button class="btn btn-danger btn-sm" @click="delDim(i)">✗</button>
+          </div>
+          <button class="btn btn-soft btn-sm" style="margin-top:6px" @click="addDim">＋ 维度</button>
+          <div class="field" style="margin-top:10px">
+            <label>境界标签（留空 = 不显示境界）</label>
+            <input v-model="schemaDraft.realmLabel" placeholder="如：境界 / 段位" />
+          </div>
+          <div style="display:flex; gap:10px; margin-top:4px">
+            <button class="btn btn-ghost" style="flex:1" @click="schemaEdit = false">取消</button>
+            <button class="btn btn-primary" style="flex:2" @click="saveSchema">保存</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- 临时区：AI 新展开的信息 -->
+      <div v-if="pendingEntries.length" class="card" style="margin-bottom:12px; border:1px solid var(--warm)">
+        <div style="display:flex; align-items:center; margin-bottom:8px">
+          <b style="flex:1">🧺 临时区（AI 新展开 {{ pendingEntries.length }} 条）</b>
+          <button class="btn btn-warm btn-sm" @click="acceptAll">全部确认</button>
+        </div>
+        <div class="list-sub" style="margin-bottom:6px">
+          游戏进行中新展开的信息先进这里；确认后写入世界书（正式生效），不想要的直接丢弃。
+        </div>
+        <div v-for="e in pendingEntries" :key="e.id" class="entry-item">
+          <span class="entry-tag" :class="e.key ? 'tag-trigger' : 'tag-constant'">
+            {{ e.key ? e.key.split(/[,，]/)[0].slice(0, 10) : '常驻' }}
+          </span>
+          <div style="flex:1; min-width:0">
+            <div class="list-sub" style="color:var(--accent-deep); font-size:11px">{{ e.category || '其他' }}</div>
+            <div class="list-sub" style="white-space:pre-wrap">{{ e.content.slice(0, 80) }}</div>
+          </div>
+          <button class="btn btn-warm btn-sm" title="确认写入世界书" @click="acceptEntry(e)">✓</button>
+          <button class="btn btn-ghost btn-sm" title="编辑" @click="openEdit(e)">编</button>
+          <button class="btn btn-danger btn-sm" title="丢弃" @click="rejectEntry(e)">✗</button>
+        </div>
+      </div>
+
+      <!-- 世界观板块 -->
+      <div v-if="!worldGroups.length && !pendingEntries.length" class="empty-hint">
+        世界的设定还未显影<br />AI 提取的世界观信息会在这里分区呈现
+      </div>
+      <div v-for="g in worldGroups" :key="g.category" class="card" style="margin-bottom:12px">
+        <b style="margin-bottom:6px; display:block">🌍 {{ g.category }}</b>
+        <div v-for="e in g.entries" :key="e.id" class="entry-item">
+          <span class="entry-tag" :class="e.key ? 'tag-trigger' : 'tag-constant'">
+            {{ e.key ? e.key.split(/[,，]/)[0].slice(0, 10) : '常驻' }}
+          </span>
+          <div style="flex:1; min-width:0">
+            <div class="list-sub" style="white-space:pre-wrap">{{ e.content }}</div>
+          </div>
+          <button class="btn btn-ghost btn-sm" @click="openEdit(e)">编</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ===== 配置 ===== -->
+    <div v-if="tab === 'config'">
+      <!-- 本存档绑定的世界书 -->
       <div class="card" style="margin-bottom:12px">
         <b style="margin-bottom:6px; display:block">🔗 本存档绑定的世界书（注入对话）</b>
-        <div v-if="!campaignLevelBindings.length" class="list-sub">未绑定——只有下面「全部接受」的笔记簿内容会进入上下文</div>
+        <div v-if="!campaignLevelBindings.length" class="list-sub">未绑定——只有下面「全部确认」的笔记簿内容会进入上下文</div>
         <div v-for="wb in campaignLevelBindings" :key="'b' + wb.id" class="entry-item">
           <span class="entry-tag tag-constant">已绑</span>
           <div style="flex:1; font-size:13px; font-weight:600">{{ wb.name }}</div>
@@ -306,36 +480,15 @@ async function onCharSaved() { await refreshChars() }
       <!-- 工具行：导出规范 / 导入 -->
       <div style="display:flex; gap:8px; margin-bottom:12px">
         <button class="btn btn-warm btn-sm" style="flex:1" @click="download('世界书格式规范.md', formatSpecMarkdown, 'text/markdown')">
-          📄 导出格式规范.md
+          📄 规范.md
         </button>
         <button class="btn btn-warm btn-sm" style="flex:1" @click="download('worldbook-schema.json', formatSpecSchema)">
-          📐 导出 Schema.json
+          📐 Schema.json
         </button>
-        <button class="btn btn-soft btn-sm" style="flex:1" @click="showImportModal = true">📥 导入世界书</button>
+        <button class="btn btn-soft btn-sm" style="flex:1" @click="showImportModal = true">📥 导入</button>
       </div>
 
-      <!-- 待审阅区 -->
-      <div v-if="pendingEntries.length" class="card" style="margin-bottom:12px; border:1px solid var(--warm)">
-        <div style="display:flex; align-items:center; margin-bottom:8px">
-          <b style="flex:1">📥 待审阅（AI 新提取 {{ pendingEntries.length }} 条）</b>
-          <button class="btn btn-warm btn-sm" @click="acceptAll">全部接受</button>
-        </div>
-        <div class="list-sub" style="margin-bottom:6px">
-          接受后进入对话上下文；不想要的直接拒绝。
-        </div>
-        <div v-for="e in pendingEntries" :key="e.id" class="entry-item">
-          <span class="entry-tag" :class="e.key ? 'tag-trigger' : 'tag-constant'">
-            {{ e.key ? e.key.split(/[,，]/)[0].slice(0, 10) : '常驻' }}
-          </span>
-          <div style="flex:1; min-width:0">
-            <div class="list-sub" style="white-space:pre-wrap">{{ e.content.slice(0, 80) }}</div>
-          </div>
-          <button class="btn btn-warm btn-sm" @click="acceptEntry(e)">✓</button>
-          <button class="btn btn-ghost btn-sm" @click="openEdit(e)">编</button>
-          <button class="btn btn-danger btn-sm" @click="rejectEntry(e)">✗</button>
-        </div>
-      </div>
-
+      <!-- 世界书列表 -->
       <div v-if="!wbList.length" class="empty-hint">还没有世界书</div>
       <div v-for="wb in wbList" :key="wb.id" class="card" style="margin-bottom: 12px">
         <div style="display:flex; align-items:center; margin-bottom: 8px">
@@ -368,11 +521,9 @@ async function onCharSaved() { await refreshChars() }
       <button class="btn btn-soft btn-block" @click="editWb = { name: '新世界书', scope: 'global', createdAt: 0, updatedAt: 0 }; showWbEditor = true">
         ＋ 新建世界书
       </button>
-    </div>
 
-    <!-- ===== 会话变量 ===== -->
-    <div v-if="tab === 'vars'">
-      <div class="card" style="margin-bottom: 12px">
+      <!-- 变量查看器 -->
+      <div class="card" style="margin: 14px 0 0">
         <b style="margin-bottom:8px; display:block">🧬 会话变量（预设引擎内部状态）</b>
         <div class="list-sub" style="margin-bottom:8px">
           这里显示的是存档的宏变量（sleep_var_* 等）。高级用户可查看/修正。
@@ -397,15 +548,37 @@ async function onCharSaved() { await refreshChars() }
       </div>
     </div>
 
-    <!-- 角色详情弹层 -->
+    <!-- 角色全屏详情 -->
     <CharacterDetail
-      v-if="charDetail"
-      :character="charDetail"
-      @close="charDetail = null"
+      v-if="charSheet"
+      :character="charSheet"
+      :schema="schema"
+      @close="charSheet = null"
       @saved="onCharSaved"
     />
 
-    <!-- 条目编辑器 -->
+    <!-- 存档切换弹层 -->
+    <div v-if="showCampaigns" class="modal-mask" @click.self="showCampaigns = false">
+      <div class="modal-sheet">
+        <div class="modal-title">选择存档</div>
+        <div v-if="!ds.campaigns.length" class="empty-hint">暂无存档</div>
+        <div
+          v-for="c in ds.campaigns"
+          :key="c.id"
+          class="list-row"
+          @click="switchCampaign(c.id!)"
+        >
+          <div>
+            <div class="list-title">{{ c.name }}</div>
+            <div class="list-sub">
+              {{ c.gameStarted ? '🎮 游戏中' : '💬 交流中' }} · 更新于 {{ new Date(c.lastActive).toLocaleString() }}
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 条目编辑器（带类别） -->
     <div v-if="showEntryEditor && editEntry" class="modal-mask" @click.self="showEntryEditor = false">
       <div class="modal-sheet">
         <div class="modal-title">编辑条目</div>
@@ -417,6 +590,12 @@ async function onCharSaved() { await refreshChars() }
           <label>内容</label>
           <textarea v-model="editEntry.content" rows="5" placeholder="这条设定的正文…"></textarea>
         </div>
+        <div class="field">
+          <label>世界类别</label>
+          <select v-model="editEntry.category">
+            <option v-for="c in CATEGORIES" :key="c" :value="c">{{ c }}</option>
+          </select>
+        </div>
         <div class="field" style="display:flex; align-items:center; gap:8px">
           <input type="checkbox" v-model="editEntry.enabled" style="width:auto" />
           <label style="margin:0">启用</label>
@@ -424,7 +603,7 @@ async function onCharSaved() { await refreshChars() }
         <div style="display:flex; gap:10px">
           <button class="btn btn-ghost" style="flex:1" @click="showEntryEditor = false">取消</button>
           <button class="btn btn-primary" style="flex:2" @click="saveEntry">
-            {{ editEntry.status === 'pending' ? '保存并接受' : '保存' }}
+            {{ editEntry.status === 'pending' ? '确认并写入世界书' : '保存' }}
           </button>
         </div>
       </div>
@@ -436,7 +615,7 @@ async function onCharSaved() { await refreshChars() }
         <div class="modal-title">导入世界书（JSON）</div>
         <div class="list-sub" style="margin-bottom:10px">
           支持本 App 规范（version/worldbook/entries/characters/relations）与 SillyTavern world_info 格式。
-          角色与关系会写入当前存档（{{ chat.currentCampaign?.name || '未打开存档则仅入库' }}）。
+          角色与关系会写入当前存档（{{ campaignName }}）。
         </div>
         <div class="field">
           <label style="margin-bottom:8px">方式一：选择文件（自动识别填入）</label>
@@ -473,6 +652,8 @@ async function onCharSaved() { await refreshChars() }
         <button class="btn btn-primary btn-block" @click="saveWb">创建</button>
       </div>
     </div>
+
+    <div v-if="toast" class="toast">{{ toast }}</div>
   </div>
 </template>
 

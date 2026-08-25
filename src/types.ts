@@ -34,6 +34,8 @@ export interface Entry {
   enabled: number       // 0/1
   source: 'manual' | 'ai' | 'imported'
   status?: 'pending' | 'accepted' | 'rejected'  // ai 条目审阅状态
+  /** v1.3：世界类别（修炼体系/经济系统/…），用于世界 tab 板块分组 */
+  category?: string
   createdAt: number
   updatedAt: number
 }
@@ -74,6 +76,8 @@ export interface Campaign {
   charInject?: number
   /** v1.2：上次停留的流（重开存档时进入哪个） */
   lastStream?: StreamKind
+  /** v1.3：存档级属性体系（AttrSchema JSON：dims + realmLabel） */
+  attrSchemaJson?: string
   createdAt: number
   updatedAt: number
   lastActive: number
@@ -123,6 +127,8 @@ export interface Character {
   name: string
   avatar?: string
   identity?: string
+  /** v1.3：境界/段位等（自由文本，AI 可从对话识别） */
+  realm?: string
   attributesJson?: string
   statusJson?: string
   description?: string

@@ -136,8 +136,23 @@ textarea { resize: vertical; min-height: 60px; }
 .tabbar .tab .ico { font-size: 19px; }
 
 /* ---------- 对话页 ---------- */
+/* v1.3 内部固定布局：顶部/选项/输入都是普通块，仅消息区滚动（根治黏不住/漏头） */
+.chat-layout {
+  display: flex;
+  flex-direction: column;
+  height: calc(100vh - 60px - env(safe-area-inset-bottom, 0px));
+  height: calc(100dvh - 60px - env(safe-area-inset-bottom, 0px));
+}
+.chat-scroll {
+  flex: 1;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  padding: 12px 14px 24px;
+  min-height: 0;
+}
+.chat-scroll > .empty-hint { margin-top: 16px; }
+
 .chat-header {
-  position: sticky; top: env(safe-area-inset-top, 0px); z-index: 20;
   display: flex; align-items: center; gap: 10px;
   padding: 10px 14px;
   padding-top: calc(10px + env(safe-area-inset-top, 0px));
@@ -150,7 +165,6 @@ textarea { resize: vertical; min-height: 60px; }
 
 /* 快捷工具栏（流切换条：交流 / 游戏） */
 .stream-bar {
-  position: sticky; top: calc(54px + env(safe-area-inset-top, 0px)); z-index: 19;
   display: flex; align-items: center; justify-content: space-between; gap: 8px;
   padding: 6px 12px;
   background: rgba(246,244,239,.92);
@@ -293,18 +307,15 @@ html[data-theme='dark'] .chat-header, html[data-theme='dark'] .stream-bar {
 .start-gate { margin-top: 26px; padding: 22px 18px; }
 .start-gate-title { font-size: 17px; font-weight: 700; text-align: center; margin-top: 6px; }
 
-.chat-input {
-  position: fixed; left: 0; right: 0; bottom: 0;
+.chat-inputbar {
   display: flex; gap: 8px; align-items: flex-end;
   padding: 10px 12px calc(10px + env(safe-area-inset-bottom));
   background: rgba(255,255,255,.96);
   backdrop-filter: blur(10px);
   border-top: 1px solid var(--line);
-  z-index: 46;
-  /* 置于 TabBar 之上：TabBar 高约 59px */
-  bottom: 59px;
 }
-.chat-input textarea {
+html[data-theme='dark'] .chat-inputbar { background: rgba(22,21,28,.96); }
+.chat-inputbar textarea {
   flex: 1; resize: none; min-height: 42px; max-height: 120px;
   border-radius: 12px;
   font-size: 15px;
@@ -319,6 +330,11 @@ html[data-theme='dark'] .chat-header, html[data-theme='dark'] .stream-bar {
 .send-btn:disabled { opacity: .4; }
 
 /* ---------- 面板 ---------- */
+.panel-header {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 4px 0 12px;
+}
+.panel-tabs { display: flex; gap: 8px; margin-bottom: 14px; }
 .char-card-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; }
 .char-card {
   background: var(--card); border-radius: var(--radius); padding: 14px;
@@ -346,7 +362,18 @@ html[data-theme='dark'] .chat-header, html[data-theme='dark'] .stream-bar {
 .char-desc { font-size: 14px; line-height: 1.7; white-space: pre-wrap; }
 .attr-edit-row { display: flex; gap: 8px; align-items: center; margin-bottom: 6px; }
 .attr-edit-row input { padding: 7px 10px; font-size: 13.5px; }
+.attr-edit-list { margin-top: 8px; }
 .rel-line { font-size: 13.5px; padding: 3px 0; }
+
+/* v1.3 全屏弹层（角色详情等） */
+.modal-full {
+  position: fixed; inset: 0;
+  background: var(--bg);
+  z-index: 70;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  padding: 16px 14px calc(30px + env(safe-area-inset-bottom, 0px));
+}
 
 /* ---------- 设置 ---------- */
 .section-gap { height: 14px; }

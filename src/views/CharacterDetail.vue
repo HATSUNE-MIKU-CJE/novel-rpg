@@ -2,36 +2,46 @@
 import { ref, computed, watch } from 'vue'
 import { db } from '../db'
 import RadarChart from './RadarChart.vue'
+import type { AttrSchema } from '../engine/extractor'
 import type { Character } from '../types'
 
-const props = defineProps<{ character: Character }>()
+const props = defineProps<{ character: Character; schema: AttrSchema }>()
 const emit = defineEmits<{ close: []; saved: [Character] }>()
 
-interface AttrRow { label: string; value: number }
-
 const editing = ref(false)
-const draft = ref({ name: '', identity: '', description: '', attrs: [] as AttrRow[] })
+const draft = ref({ realm: '', description: '', attrs: [] as Array<{ label: string; value: number }> })
 
-function parseAttrs(json?: string): AttrRow[] {
-  if (!json) return []
+/** 旧格式 attributesJson → Map(label → value) */
+function parseAttrs(json?: string): Map<string, number> {
+  const map = new Map<string, number>()
+  if (!json) return map
   try {
-    const arr = JSON.parse(json) as AttrRow[]
-    return Array.isArray(arr) ? arr.filter((a) => a?.label) : []
-  } catch { return [] }
+    const arr = JSON.parse(json) as Array<{ label?: string; value?: number }>
+    if (Array.isArray(arr)) for (const a of arr) if (a?.label) map.set(String(a.label), Number(a.value) || 0)
+  } catch { /* ignore */ }
+  return map
 }
 
 function load() {
   const c = props.character
+  const map = parseAttrs(c.attributesJson)
   draft.value = {
-    name: c.name,
-    identity: c.identity ?? '',
+    realm: c.realm ?? '',
     description: c.description ?? '',
-    attrs: parseAttrs(c.attributesJson),
+    // 按存档维度对齐：缺失画 0
+    attrs: props.schema.dims.map((d) => ({ label: d.label, value: map.get(d.label) ?? 0 })),
   }
 }
-watch(() => props.character, load, { immediate: true })
+watch(() => [props.character, props.schema], load, { immediate: true })
 
-const attrs = computed(() => draft.value.attrs)
+/** 展示用雷达数据（schema 顺序） */
+const radarAttrs = computed(() =>
+  props.schema.dims.map((d) => {
+    const v = draft.value.attrs.find((a) => a.label === d.label)?.value ?? 0
+    return { label: d.label, value: v }
+  }),
+)
+const realmLabel = computed(() => props.schema.realmLabel ?? '')
 
 /** 该角色参与的关系 */
 const relations = ref<Array<{ fromChar: string; toChar: string; relType: string; label?: string }>>([])
@@ -46,8 +56,8 @@ watch(
   { immediate: true },
 )
 
-/** 关联条目：笔记簿/绑定世界书中 key 含角色名、或 content 含角色名的条目 */
-const relatedEntries = ref<Array<{ key: string; content: string; status?: string }>>([])
+/** 关联条目：绑定世界书/笔记簿中 key 或 content 含角色名的条目 */
+const relatedEntries = ref<Array<{ key: string; content: string; status?: string; category?: string }>>([])
 watch(
   () => props.character,
   async (c) => {
@@ -59,13 +69,13 @@ watch(
     const wbIds = bs.map((b) => b.worldbookId)
     const camp = ds.campaigns.find((x) => x.id === cid)
     if (camp?.notebookWorldbookId) wbIds.push(camp.notebookWorldbookId)
-    const hit = new Map<string, { key: string; content: string; status?: string }>()
+    const hit = new Map<string, { key: string; content: string; status?: string; category?: string }>()
     for (const wid of wbIds) {
       for (const e of ds.entriesOf(wid)) {
         if (!e.enabled || !e.content.trim() || e.status === 'rejected') continue
         const keys = (e.key || '').split(/[,，]/).map((k) => k.trim()).filter(Boolean)
         if (keys.some((k) => k.includes(c.name)) || e.content.includes(c.name)) {
-          hit.set(String(e.id), { key: e.key || '常驻', content: e.content, status: e.status })
+          hit.set(String(e.id), { key: e.key || '常驻', content: e.content, status: e.status, category: e.category })
         }
       }
     }
@@ -74,19 +84,14 @@ watch(
   { immediate: true },
 )
 
-function addAttr() {
-  draft.value.attrs.push({ label: '', value: 5 })
-}
-function delAttr(i: number) {
-  draft.value.attrs.splice(i, 1)
-}
-
 async function save() {
   const c = props.character
-  const attrsJson = JSON.stringify(draft.value.attrs.filter((a) => a.label.trim()))
+  const attrsJson = JSON.stringify(
+    draft.value.attrs.filter((a) => a.label.trim() && a.value > 0).map((a) => ({ label: a.label, value: a.value })),
+  )
   const updated: Character = {
     ...c,
-    identity: draft.value.identity.trim(),
+    realm: draft.value.realm.trim() || undefined,
     description: draft.value.description.trim(),
     attributesJson: attrsJson,
     updatedAt: Date.now(),
@@ -98,70 +103,73 @@ async function save() {
 </script>
 
 <template>
-  <div class="modal-mask" @click.self="emit('close')">
-    <div class="modal-sheet char-detail">
-      <div style="display:flex; align-items:center; gap:12px">
-        <div class="char-avatar" style="width:52px; height:52px; font-size:23px; margin:0">
-          {{ character.name.slice(0, 1) }}
-        </div>
-        <div style="flex:1; min-width:0">
-          <div class="modal-title" style="text-align:left; margin-bottom:2px">{{ character.name }}</div>
-          <div class="list-sub">{{ character.identity || '身份未知' }} · {{ character.source === 'ai' ? 'AI 提取' : '手动' }}</div>
-        </div>
-        <button class="btn btn-ghost btn-sm" @click="emit('close')">×</button>
+  <div class="modal-full">
+    <div style="display:flex; align-items:center; gap:12px; max-width:640px; margin:0 auto">
+      <div class="char-avatar" style="width:56px; height:56px; font-size:25px; margin:0; flex-shrink:0">
+        {{ character.name.slice(0, 1) }}
       </div>
-
-      <!-- 属性雷达 -->
-      <div v-if="attrs.length" class="field" style="margin-top:12px">
-        <label>🧭 面板属性 <span v-if="editing" class="list-sub">（点击数值编辑）</span></label>
-        <RadarChart :attrs="attrs" />
-      </div>
-      <div v-else-if="!editing" class="list-sub" style="margin-top:12px">
-        暂未提取到属性 —— 点下方「编辑」可手动添加
-      </div>
-
-      <!-- 属性编辑 -->
-      <div v-if="editing" class="field" style="margin-top:10px">
-        <div v-for="(a, i) in draft.attrs" :key="i" class="attr-edit-row">
-          <input v-model="a.label" placeholder="属性名" style="flex:1" />
-          <input v-model.number="a.value" type="number" min="0" max="10" style="width:64px" />
-          <button class="btn btn-ghost btn-sm" @click="delAttr(i)">✗</button>
-        </div>
-        <button class="btn btn-soft btn-sm" style="margin-top:6px" @click="addAttr">＋ 属性</button>
-      </div>
-
-      <!-- 描述 -->
-      <div class="field" style="margin-top:10px">
-        <label>📝 描述</label>
-        <textarea v-if="editing" v-model="draft.description" rows="4"></textarea>
-        <div v-else class="char-desc">{{ character.description || '暂无描述' }}</div>
-      </div>
-
-      <!-- 关系 -->
-      <div v-if="relations.length" class="field">
-        <label>🕸 关系</label>
-        <div v-for="(r, i) in relations" :key="i" class="rel-line">
-          {{ r.toChar === character.name ? '←' : '→' }} {{ r.toChar === character.name ? r.fromChar : r.toChar }}
-          <span class="list-sub">（{{ r.relType }} {{ r.label || '' }}）</span>
+      <div style="flex:1; min-width:0">
+        <div style="font-size:19px; font-weight:700">{{ character.name }}</div>
+        <div class="list-sub">
+          {{ character.identity || '身份未知' }} ·
+          <template v-if="realmLabel && character.realm">{{ realmLabel }}：{{ character.realm }} · </template>
+          {{ character.source === 'ai' ? 'AI 提取' : '手动' }}
         </div>
       </div>
+      <button class="btn btn-ghost btn-sm" @click="emit('close')">✕</button>
+    </div>
 
-      <!-- 关联条目 -->
-      <div v-if="relatedEntries.length" class="field">
-        <label>📚 关联世界书</label>
-        <div v-for="(e, i) in relatedEntries" :key="i" class="entry-item" style="padding:6px 2px">
-          <span class="entry-tag" :class="e.key === '常驻' ? 'tag-constant' : 'tag-trigger'">{{ e.key === '常驻' ? '常驻' : e.key.slice(0, 8) }}</span>
-          <div class="list-sub" style="white-space:pre-wrap; flex:1">{{ e.content.slice(0, 60) }}{{ e.content.length > 60 ? '…' : '' }}</div>
+    <!-- 六维能力雷达 -->
+    <div style="max-width:640px; margin:10px auto 0" class="card">
+      <label style="display:block; font-size:13px; font-weight:600; color:var(--ink-soft); margin-bottom:6px">
+        🧭 能力雷达{{ realmLabel ? ` · ${realmLabel}` : '' }}
+      </label>
+      <RadarChart :attrs="radarAttrs" />
+      <div v-if="editing" class="attr-edit-list">
+        <label style="font-size:13px; font-weight:600; color:var(--ink-soft); margin:8px 0 4px">数值（0-10）</label>
+        <div v-for="a in draft.attrs" :key="a.label" class="attr-edit-row">
+          <span style="flex:1; font-size:14px; font-weight:600">{{ a.label }}</span>
+          <input v-model.number="a.value" type="number" min="0" max="10" style="width:70px" />
+        </div>
+        <div v-if="realmLabel" class="field" style="margin-top:10px">
+          <label>{{ realmLabel }}</label>
+          <input v-model="draft.realm" :placeholder="`如：金丹期 / 见习法师`" />
         </div>
       </div>
+    </div>
 
-      <div style="display:flex; gap:10px; margin-top:8px">
-        <template v-if="editing">
-          <button class="btn btn-ghost" style="flex:1" @click="editing = false">取消</button>
-          <button class="btn btn-primary" style="flex:2" @click="save">保存</button>
-        </template>
-        <button v-else class="btn btn-warm btn-block" @click="editing = true">✏️ 编辑角色卡</button>
+    <!-- 描述 -->
+    <div class="card" style="max-width:640px; margin:12px auto 0">
+      <label style="display:block; font-size:13px; font-weight:600; color:var(--ink-soft); margin-bottom:6px">📝 描述</label>
+      <textarea v-if="editing" v-model="draft.description" rows="4"></textarea>
+      <div v-else class="char-desc">{{ character.description || '暂无描述' }}</div>
+    </div>
+
+    <!-- 关系 -->
+    <div v-if="relations.length" class="card" style="max-width:640px; margin:12px auto 0">
+      <label style="display:block; font-size:13px; font-weight:600; color:var(--ink-soft); margin-bottom:6px">🕸 关系</label>
+      <div v-for="(r, i) in relations" :key="i" class="rel-line">
+        {{ r.toChar === character.name ? '←' : '→' }} {{ r.toChar === character.name ? r.fromChar : r.toChar }}
+        <span class="list-sub">（{{ r.relType }} {{ r.label || '' }}）</span>
       </div>
+    </div>
+
+    <!-- 关联世界书 -->
+    <div v-if="relatedEntries.length" class="card" style="max-width:640px; margin:12px auto 0">
+      <label style="display:block; font-size:13px; font-weight:600; color:var(--ink-soft); margin-bottom:6px">📚 关联世界书</label>
+      <div v-for="(e, i) in relatedEntries" :key="i" class="entry-item" style="padding:6px 2px">
+        <span class="entry-tag" :class="e.key === '常驻' ? 'tag-constant' : 'tag-trigger'">{{ e.key === '常驻' ? '常驻' : e.key.slice(0, 8) }}</span>
+        <div class="list-sub" style="white-space:pre-wrap; flex:1">{{ e.content.slice(0, 60) }}{{ e.content.length > 60 ? '…' : '' }}</div>
+      </div>
+    </div>
+
+    <!-- 操作 -->
+    <div style="max-width:640px; margin:16px auto 0; display:flex; gap:10px">
+      <template v-if="editing">
+        <button class="btn btn-ghost" style="flex:1" @click="editing = false">取消</button>
+        <button class="btn btn-primary" style="flex:2" @click="save">保存</button>
+      </template>
+      <button v-else class="btn btn-warm btn-block" @click="editing = true">✏️ 编辑角色卡</button>
     </div>
   </div>
 </template>

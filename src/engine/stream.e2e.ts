@@ -1,9 +1,9 @@
 /**
- * v1.2 双流相关纯函数测试：属性合并 / 属性清洗。
+ * v1.2/1.3 双流与属性体系纯函数测试：属性合并 / 属性清洗 / schema 解析。
  *   npx tsx src/engine/stream.e2e.ts
  */
-import { mergeAttrs, sanitizeResult, type ExtractResult } from './extractor'
-import { extractJson } from './extractor'
+import { mergeAttrs, sanitizeResult, extractJson, makeSystemPrompt, parseAttrSchema, normCategory } from './extractor'
+import type { ExtractResult } from './extractor'
 
 let pass = 0, fail = 0
 function check(name: string, cond: boolean, detail?: string) {
@@ -31,6 +31,23 @@ const clean = sanitizeResult(parsed!)
 check('11 钳到 10', clean.characters[0].attributes?.[0].value === 10)
 check('负数钳到 0', clean.characters[0].attributes?.find((a) => a.label === '灵性')?.value === 0)
 check('空 label 过滤', clean.characters[0].attributes?.length === 2, JSON.stringify(clean.characters[0].attributes))
+
+console.log('【属性体系 schema】')
+const dflt = parseAttrSchema(undefined)
+check('缺省 = 通用六维', dflt.dims.length === 6 && dflt.dims[0].label === '力量' && dflt.realmLabel === '境界')
+check('坏 JSON → 默认', parseAttrSchema('{{bad').dims.length === 6)
+const custom = parseAttrSchema(JSON.stringify({ dims: [{ label: ' 体魄 ' }, { label: '' }, { label: '灵根' }], realmLabel: '段位' }))
+check('自定义解析 + 清洗', custom.dims.length === 2 && custom.dims[0].label === '体魄' && custom.realmLabel === '段位')
+check('维度上限 10', parseAttrSchema(JSON.stringify({ dims: Array.from({ length: 14 }, (_, i) => ({ label: 'd' + i })) })).dims.length === 10)
+
+console.log('【类别归一 & 提示词】')
+check('合法类别', normCategory('修炼体系') === '修炼体系')
+check('非法类别 → 其他', normCategory('乱写') === '其他')
+check('空类别 → 其他', normCategory(undefined) === '其他')
+const sp = makeSystemPrompt(['力量', '敏捷'], '境界')
+check('提示词含维度', sp.includes('「力量、敏捷」') && sp.includes('境界'))
+const sp2 = makeSystemPrompt([], '')
+check('无维度 → 自由命名提示', sp2.includes('自由命名') && !sp2.includes('realm'))
 
 console.log(`\n结果：${pass} 通过 / ${fail} 失败`)
 process.exit(fail ? 1 : 0)

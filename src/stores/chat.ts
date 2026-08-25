@@ -7,7 +7,10 @@ import { renderPromptChain, chatCompletion, type ChatUserMessage } from '../engi
 import { parseDreamPlot } from '../engine/dreamParser'
 import { buildDreamPromptBlocks, defaultDreamConfig, TALK_SYSTEM, type DreamConfig } from '../engine/dreamPreset'
 import { parseUsage, estimateCostYuan } from '../engine/pricing'
-import { extractFacts, extractJson, mergeAttrs } from '../engine/extractor'
+import {
+  extractFacts, extractJson, mergeAttrs,
+  parseAttrSchema, attrSchemaJson, type AttrSchema,
+} from '../engine/extractor'
 import { httpFetch } from '../engine/http'
 
 /** 剥离 Vue 响应式代理，得到 IndexedDB 可序列化的纯对象 */
@@ -175,6 +178,56 @@ export const useChatStore = defineStore('chat', {
       } catch { return null }
     },
 
+    /** v1.3：存档属性体系（无配置 → 默认通用六维） */
+    attrSchema(): AttrSchema {
+      return parseAttrSchema(this.currentCampaign?.attrSchemaJson)
+    },
+
+    /** v1.3：保存属性体系 */
+    async saveAttrSchema(s: AttrSchema) {
+      const c = this.currentCampaign
+      if (!c) return
+      c.attrSchemaJson = attrSchemaJson(s)
+      await useDataStore().saveCampaign(c)
+    },
+
+    /**
+     * v1.3：AI 建议属性体系 —— 读交流栏内容 + 当前体系，输出建议维度。
+     */
+    async suggestAttrSchema(): Promise<AttrSchema | null> {
+      const c = this.currentCampaign
+      if (!c) return null
+      const ds = useDataStore()
+      const api = ds.getDefaultApi()
+      if (!api || !api.apiKey) { this.error = '建议需要 API 配置'; return null }
+      const cur = this.attrSchema()
+      const talkText = this.talkMessages
+        .map((m) => (m.role === 'user' ? `梦客：${m.content}` : `思客：${m.content}`))
+        .join('\n\n')
+        .slice(-40000)
+      if (!talkText.trim()) { this.error = '交流栏还没有内容，先和主持聊聊题材吧'; return null }
+      try {
+        const reply = await chatCompletion(api, [
+          {
+            role: 'system',
+            content: `你是梦境游戏的属性体系设计师。根据玩家与主持的设定讨论，设计一套角色属性维度。
+输出严格 JSON（不要其他文字、不要代码块）：{"dims":[{"label":"维度名"}...],"realmLabel":"境界标签名"}
+要求：4~8 个维度；维度名 2-4 个字、互相不重叠；契合讨论中的题材（修仙/奇幻/现代等）；realmLabel 为境界/段位类标签名，题材不需要就留空字符串。`,
+          },
+          {
+            role: 'user',
+            content: `当前属性体系：${cur.dims.map((d) => d.label).join('、')}（境界标签：${cur.realmLabel ?? '无'}）\n\n玩家与主持的讨论：\n\n${talkText}`,
+          },
+        ])
+        const parsed = extractJson<AttrSchema>(reply)
+        if (!parsed || !Array.isArray(parsed.dims) || !parsed.dims.length) return null
+        return { dims: parsed.dims.filter((d) => d?.label?.trim()).slice(0, 10), realmLabel: parsed.realmLabel ?? '' }
+      } catch (e: any) {
+        this.error = `建议生成失败：${e?.message || e}`
+        return null
+      }
+    },
+
     /** 交流栏 system：主持人格 + 已生效设定参考（世界书 + 角色卡） */
     async buildTalkSystem(): Promise<string> {
       const ds = useDataStore()
@@ -194,6 +247,8 @@ export const useChatStore = defineStore('chat', {
         }
         const charText = await this.charCardsText()
         if (charText) lines.push(charText)
+        const schema = this.attrSchema()
+        lines.push(`【当前属性体系】${schema.dims.map((d) => d.label).join('、')}${schema.realmLabel ? `（${schema.realmLabel}）` : ''}`)
         if (lines.length) parts.push(`【当前已生效的设定参考】\n${lines.join('\n').slice(0, 8000)}`)
       }
       return parts.join('\n\n')
@@ -480,11 +535,14 @@ export const useChatStore = defineStore('chat', {
       this.organizing = true
       this.error = ''
       try {
-        // 2. 已有实体（增量去重）
+        // 已有实体（增量去重）
         const chars = await db.characters.where('campaignId').equals(this.currentCampaignId).toArray()
         const rels = await db.relations.where('campaignId').equals(this.currentCampaignId).toArray()
         const notebook = await this.ensureNotebook()
         const notebookEntries = notebook.id ? ds.entriesOf(notebook.id) : []
+        // v1.3：存档属性体系（提取维度强制 + 境界识别）
+        const schema = this.attrSchema()
+        const dimLabels = schema.dims.map((d) => d.label)
 
         const result = await extractFacts(api, {
           characters: chars.map((c) => c.name),
@@ -492,17 +550,25 @@ export const useChatStore = defineStore('chat', {
           // 已有事实触发词：手动/导入 + AI（含 pending，防止重复提取）
           facts: notebookEntries.filter((e) => e.status !== 'rejected').map((e) => e.key),
           recentText: text,
+          attrDims: dimLabels,
+          realmLabel: schema.realmLabel ?? '',
         })
 
-        // 3. 写角色（按名字增量更新，属性合并）
+        // 3. 写角色（按名字增量更新，属性合并；属性只保留存档维度）
         let newChars = 0, updChars = 0
         for (const c of result.characters) {
           const exist = chars.find((x) => x.name === c.name)
-          const attrsJson = mergeAttrs(exist?.attributesJson, c.attributes)
+          const dimAttrs = (c.attributes ?? []).filter((a) => dimLabels.includes(a.label))
+          const attrsJson = mergeAttrs(exist?.attributesJson, dimAttrs)
           if (exist) {
-            if ((c.description && c.description !== exist.description) || attrsJson !== exist.attributesJson) {
-              exist.description = c.description ?? exist.description
-              exist.identity = c.identity ?? exist.identity
+            const changed = (c.description && c.description !== exist.description)
+              || (c.identity && c.identity !== exist.identity)
+              || (c.realm && c.realm !== exist.realm)
+              || (attrsJson !== exist.attributesJson)
+            if (changed) {
+              if (c.description) exist.description = c.description
+              if (c.identity) exist.identity = c.identity
+              if (c.realm) exist.realm = c.realm
               if (attrsJson !== undefined) exist.attributesJson = attrsJson
               exist.source = exist.source || 'ai'
               exist.updatedAt = Date.now()
@@ -512,7 +578,8 @@ export const useChatStore = defineStore('chat', {
           } else {
             await db.characters.add(plainMsg({
               campaignId: this.currentCampaignId,
-              name: c.name, identity: c.identity ?? '', description: c.description ?? '',
+              name: c.name, identity: c.identity ?? '', realm: c.realm,
+              description: c.description ?? '',
               attributesJson: attrsJson,
               source: 'ai', createdAt: Date.now(), updatedAt: Date.now(),
             }))
@@ -540,6 +607,7 @@ export const useChatStore = defineStore('chat', {
             worldbookId: notebook.id!,
             key: f.key ?? '',
             content: f.content,
+            category: f.category,
             enabled: 1,
             source: 'ai',
             status: 'pending',

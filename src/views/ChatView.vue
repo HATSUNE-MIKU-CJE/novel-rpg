@@ -66,20 +66,16 @@ function fmtTokens(n?: number): string {
   return String(n)
 }
 
-// ---- 滚动（#app 为滚动容器；键盘弹出时动态补底部 padding） ----
-const listPad = ref(130)
+// ---- 滚动（消息区独立滚动；键盘弹出动态补底部 padding） ----
+const listPad = ref(24)
 function scrollBottom(smooth = true) {
-  nextTick(() => {
-    const el = document.getElementById('app')
-    if (!el) return
-    el.scrollTo({ top: el.scrollHeight, behavior: smooth ? 'smooth' : 'auto' })
-  })
+  nextTick(() => listEl.value?.scrollTo({ top: listEl.value.scrollHeight, behavior: smooth ? 'smooth' : 'auto' }))
 }
 function onViewport() {
   const vv = window.visualViewport
   if (!vv) return
   const kb = Math.max(0, window.innerHeight - vv.height)
-  listPad.value = 130 + kb
+  listPad.value = 24 + kb
 }
 onMounted(() => window.visualViewport?.addEventListener('resize', onViewport))
 onUnmounted(() => window.visualViewport?.removeEventListener('resize', onViewport))
@@ -208,7 +204,7 @@ async function saveCharDetail(updated: Character) {
 </script>
 
 <template>
-  <div>
+  <div class="chat-layout">
     <!-- 头部：存档切换 -->
     <header class="chat-header" @click="showCampaigns = true">
       <div style="font-size:18px">📖</div>
@@ -275,7 +271,7 @@ async function saveCharDetail(updated: Character) {
     </div>
 
     <!-- 消息流 -->
-    <div ref="listEl" class="page" :style="{ paddingBottom: listPad + 'px' }" v-if="chat.currentCampaignId">
+    <div ref="listEl" class="chat-scroll" :style="{ paddingBottom: listPad + 'px' }" v-if="chat.currentCampaignId">
       <!-- 游戏栏 · 未开始：开始游戏入口 -->
       <div v-if="chat.currentStream === 'game' && !chat.inGame" class="start-gate card">
         <div style="font-size:34px; text-align:center; margin-top:8px">🎮</div>
@@ -376,15 +372,15 @@ async function saveCharDetail(updated: Character) {
       </template>
     </div>
 
-    <div v-else class="page">
+    <div v-else class="chat-scroll">
       <div class="empty-hint">
         还没有存档<br />
         点上方「＋ 新档」开始你的第一个梦境
       </div>
     </div>
 
-    <!-- 输入栏 -->
-    <div v-if="chat.currentCampaignId && !(chat.currentStream === 'game' && !chat.inGame)" class="chat-input">
+    <!-- 输入栏（布局底部块，键盘弹出自动上移） -->
+    <div v-if="chat.currentCampaignId && !(chat.currentStream === 'game' && !chat.inGame)" class="chat-inputbar">
       <textarea
         v-model="draft"
         :placeholder="chat.currentStream === 'talk' ? '和主持聊聊设定、角色或想法…' : '书写你的行动、话语或念头…'"
@@ -507,6 +503,7 @@ async function saveCharDetail(updated: Character) {
     <CharacterDetail
       v-if="charDetail"
       :character="charDetail"
+      :schema="chat.attrSchema()"
       @close="charDetail = null"
       @saved="saveCharDetail"
     />

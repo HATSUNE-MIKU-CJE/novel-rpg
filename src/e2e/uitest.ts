@@ -33,12 +33,14 @@ const mock = createServer((req: IncomingMessage, res: ServerResponse) => {
 
     let content: string
     if (sysText.includes('书记官')) {
-      // 事实/设定提取
-      content = '```json\n{"characters":[{"name":"艾莉丝","identity":"见习法师","description":"银发少女，带着旧魔法书","attributes":[{"label":"智力","value":8},{"label":"胆识","value":6},{"label":"灵性","value":5}]},{"name":"铁锤","identity":"卫队长","description":"魁梧矮人","attributes":[{"label":"力量","value":9}]}],"relations":[{"from":"艾莉丝","to":"铁锤","relType":"同伴"}],"facts":[{"key":"铁炉堡","content":"铁炉堡东境出现狼群。"},{"key":"艾莉丝","content":"艾莉丝的旧魔法书疑似来自王室。"},{"key":"","content":"王族徽记是锤与铁砧交叉图案。"}]}\n```'
+      // 事实/设定提取（属性按默认六维：力量/敏捷/智力/意志/感知/魅力）
+      content = '```json\n{"characters":[{"name":"艾莉丝","identity":"见习法师","realm":"炼气三层","description":"银发少女，带着旧魔法书","attributes":[{"label":"智力","value":8},{"label":"意志","value":6},{"label":"感知","value":5}]},{"name":"铁锤","identity":"卫队长","description":"魁梧矮人","attributes":[{"label":"力量","value":9}]}],"relations":[{"from":"艾莉丝","to":"铁锤","relType":"同伴"}],"facts":[{"key":"铁炉堡","content":"铁炉堡东境出现狼群。","category":"地理环境"},{"key":"艾莉丝","content":"艾莉丝的旧魔法书疑似来自王室。","category":"物品神器"},{"key":"","content":"王族徽记是锤与铁砧交叉图案。","category":"种族文化"}]}\n```'
     } else if (sysText.includes('开局设计师')) {
       content = '{"worldview":"矮人王国铁炉堡的清晨，狼群与王族古书之谜将揭开序幕。","opening":"晨雾披上铁炉堡的城垛。你背着行囊站在东门前，远处狼嚎与锻锤声交织——旧魔法书的秘密，正等你推开这扇门。"}'
     } else if (sysText.includes('剧情回顾师')) {
       content = '{"title":"铁炉堡清晨之约","events":[{"time":"清晨","place":"东门","desc":"敲开东门遇见艾莉丝。"},{"time":"上午","place":"城门口","desc":"狼群在远处嚎叫，铁锤队长出现。"}]}'
+    } else if (sysText.includes('属性体系设计师')) {
+      content = '{"dims":[{"label":"体魄"},{"label":"灵根"},{"label":"悟性"},{"label":"心境"},{"label":"神识"},{"label":"气运"}],"realmLabel":"境界"}'
     } else if (sysText.includes('游戏设计主持')) {
       // 交流栏：纯文本回应
       content = `好，${echoed.slice(0, 30)} —— 这个方向很有味道。我们先把世界观锚定：你想让铁炉堡处于什么时代？`
@@ -111,7 +113,7 @@ check('默认在交流栏', await page.getByText(/和 AI 组队设计你的梦�
 
 // 交流栏发消息（mock 主持人格返回纯文本）
 console.log('【交流对话】')
-await page.locator('.chat-input textarea').fill('我想玩一个矮人铁炉堡的跑团')
+await page.locator('.chat-inputbar textarea').fill('我想玩一个矮人铁炉堡的跑团')
 await page.getByRole('button', { name: '➤' }).click()
 await page.waitForTimeout(2500)
 check('交流用户消息上屏', await page.getByText('我想玩一个矮人铁炉堡的跑团').count() > 0)
@@ -135,7 +137,7 @@ check('开场白写入游戏流', await page.getByText(/晨雾披上铁炉堡的
 
 // ---- 6. 游戏对话（写作） ----
 console.log('【游戏对话】')
-await page.locator('.chat-input textarea').fill('我走到东门前，敲了三下。')
+await page.locator('.chat-inputbar textarea').fill('我走到东门前，敲了三下。')
 await page.getByRole('button', { name: '➤' }).click()
 await page.waitForTimeout(2500)
 check('游戏用户消息上屏', await page.getByText('我走到东门前，敲了三下。').count() > 0)
@@ -155,53 +157,86 @@ await page.getByRole('button', { name: /↻ 同步设定/ }).click()
 await page.waitForTimeout(1500)
 check('同步反馈出现', await page.getByText(/交流栏暂无新设定|已同步设定/).count() > 0)
 
-// ---- 7. 面板：整理世界书（游戏流 → 世界书）----
-console.log('【整理世界书】')
+// ---- 7. 面板：存档切换 + 整理世界书 ----
+console.log('【面板 · 存档】')
 await page.locator('.tabbar').getByText('面板').click()
 await page.waitForTimeout(400)
+check('面板顶端带存档名', await page.getByText('📖 铁炉堡篇').count() > 0)
+await page.getByRole('button', { name: /📖 铁炉堡篇/ }).click()
+await page.waitForTimeout(300)
+check('存档切换弹层出现', await page.getByText('选择存档').count() > 0)
+await page.locator('.list-row', { hasText: '铁炉堡篇' }).click()
+await page.waitForTimeout(400)
+
+console.log('【整理世界书】')
 await page.getByRole('button', { name: /整理世界书/ }).click()
 await page.waitForTimeout(2000)
 check('角色卡出现（艾莉丝）', await page.getByText('艾莉丝', { exact: false }).count() > 0)
 check('角色身份显示', await page.getByText('见习法师', { exact: false }).count() > 0)
 check('整理统计显示', await page.getByText(/上次整理/).count() > 0)
 
-// 点角色卡 → 详情弹层（雷达图）
-console.log('【角色详情】')
+// 点角色卡 → 全屏角色页（六维雷达 + 境界）
+console.log('【角色全屏页】')
 await page.locator('.char-card', { hasText: '艾莉丝' }).click()
 await page.waitForTimeout(600)
-check('详情弹层标题', await page.getByText('艾莉丝', { exact: true }).count() > 0)
-check('雷达图渲染（多边形）', await page.locator('svg polygon[fill="var(--accent)"]').count() > 0)
-await page.getByText('×', { exact: false }).last().click()
+check('全屏页标题', await page.getByText('艾莉丝', { exact: true }).count() > 0)
+check('能力雷达出现', await page.getByText('能力雷达').count() > 0)
+check('六维雷达渲染', await page.locator('svg polygon[fill="var(--accent)"]').count() > 0)
+check('境界显示', await page.getByText('炼气三层', { exact: false }).count() > 0)
+check('编辑按钮（可编辑）', await page.getByRole('button', { name: /编辑角色卡/ }).count() > 0)
+await page.getByRole('button', { name: '✕' }).click()
 await page.waitForTimeout(300)
 
-// 待审阅区
-console.log('【待审阅】')
+// ---- 8. 世界 tab：属性设定 + 临时区 ----
+console.log('【世界 tab】')
+await page.getByRole('button', { name: /🌍 世界/ }).click()
+await page.waitForTimeout(400)
+check('属性设定卡出现', await page.getByText('🎛 属性设定').count() > 0)
+check('默认六维展示', await page.getByText('力量', { exact: true }).count() > 0)
+
 async function pendingCount(): Promise<number> {
-  const m = await page.getByText(/待审阅（AI 新提取 \d+ 条/).innerText()
+  const m = await page.getByText(/🧺 临时区（AI 新展开 \d+ 条/).innerText()
   return parseInt(m.match(/\d+/)![0], 10)
 }
-await page.getByRole('button', { name: /📚 世界书/ }).click()
-await page.waitForTimeout(400)
-check('待审阅区出现', await page.getByText(/待审阅（AI 新提取/).count() > 0)
-check('待审条目内容', await page.getByText('铁炉堡东境出现狼群').count() > 0)
+check('临时区出现', await page.getByText(/🧺 临时区（AI 新展开/).count() > 0)
+check('临时条目带类别', await page.getByText('地理环境', { exact: true }).count() > 0)
 const beforeP = await pendingCount()
-await page.getByRole('button', { name: '✓' }).first().click()
+await page.getByTitle('确认写入世界书').first().click()
 await page.waitForTimeout(400)
-check('接受后待审减 1', (await pendingCount()) === beforeP - 1)
-await page.getByRole('button', { name: '✗' }).first().click()
+check('确认后临时区减 1', (await pendingCount()) === beforeP - 1)
+check('确认后板块显影（地理环境）', await page.getByText('🌍 地理环境').count() > 0)
+await page.getByTitle('丢弃').first().click()
 await page.waitForTimeout(400)
-check('拒绝后待审再减 1', (await pendingCount()) === beforeP - 2)
+check('丢弃后临时区再减 1', (await pendingCount()) === beforeP - 2)
 
-// ---- 8. 关系图 ----
+// 属性建议（AI 按交流内容）
+console.log('【属性建议】')
+await page.getByRole('button', { name: /🤖 按交流建议/ }).click()
+await page.waitForTimeout(2500)
+check('建议维度填入编辑区', await page.locator('input[placeholder="维度名"]').count() >= 4)
+await page.getByRole('button', { name: '保存' }).click()
+await page.waitForTimeout(400)
+check('保存后显示新维度（体魄）', await page.getByText('体魄', { exact: true }).count() > 0)
+
+// ---- 9. 配置 tab：世界书管理 + 变量 ----
+console.log('【配置 tab】')
+await page.getByRole('button', { name: /⚙️ 配置/ }).click()
+await page.waitForTimeout(400)
+check('绑定管理出现', await page.getByText('🔗 本存档绑定的世界书').count() > 0)
+check('自动笔记簿在列表', await page.getByText('自动笔记簿', { exact: false }).count() > 0)
+check('变量查看器出现', await page.getByText('🧬 会话变量').count() > 0)
+
+// ---- 10. 关系图 ----
 console.log('【关系图】')
 await page.getByRole('button', { name: /🕸 关系/ }).click()
 await page.waitForTimeout(500)
 check('关系图渲染', await page.locator('svg circle').count() >= 2)
 await page.locator('svg circle').first().click()
 await page.waitForTimeout(500)
-check('关系图点击弹角色详情', await page.getByText('编辑角色卡').count() > 0)
+check('关系图点击弹全屏角色页', await page.getByText('能力雷达').count() > 0)
+await page.getByRole('button', { name: '✕' }).click()
 
-// ---- 9. 截图 ----
+// ---- 11. 截图 ----
 await page.screenshot({ path: join(root, 'docs', 'screenshot-v3.png'), fullPage: true })
 
 await browser.close()
