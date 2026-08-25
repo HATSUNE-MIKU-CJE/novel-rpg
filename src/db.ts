@@ -28,6 +28,10 @@ class NovelRpgDB extends Dexie {
       characters: '++id, campaignId, name',
       relations: '++id, campaignId',
     })
+    // v1.2：消息双流（talk/game），旧数据 stream 缺省 = game
+    this.version(2).stores({
+      messages: '++id, campaignId, seq, stream, [campaignId+seq], [campaignId+stream+seq]',
+    })
   }
 }
 

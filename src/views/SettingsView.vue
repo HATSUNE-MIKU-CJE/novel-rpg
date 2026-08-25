@@ -85,7 +85,7 @@ const globalStats = computed(() => {
     tokens += c.statTokens ?? 0
     cost += c.statCostYuan ?? 0
   }
-  const msgs = chat.messages
+  const msgs = [...chat.talkMessages, ...chat.gameMessages]
   rounds = msgs.filter((m) => m.role === 'assistant').length
   return { tokens, cost, rounds }
 })

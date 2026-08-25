@@ -39,6 +39,8 @@ export interface Entry {
 }
 
 // ---------------- 存档 ----------------
+export type StreamKind = 'talk' | 'game'
+
 export interface Campaign {
   id?: number
   name: string
@@ -62,6 +64,16 @@ export interface Campaign {
   notebookWorldbookId?: number
   lastOrganized?: number
   organizeStats?: string   // JSON：上次整理的统计 {chars, rels, facts, at}
+  /** v1.2 双流：1=已开始游戏（游戏流可玩）；0=仍在交流阶段 */
+  gameStarted?: number
+  /** v1.2：交流流 → 游戏设定 的同步游标（已同步到的 seq） */
+  lastSyncedTalkSeq?: number
+  /** v1.2：游戏流 → 交流栏 的同步游标 */
+  lastSyncedGameSeq?: number
+  /** v1.2：1=角色卡作为常驻注入游戏对话（默认）；0=仅面板可视化 */
+  charInject?: number
+  /** v1.2：上次停留的流（重开存档时进入哪个） */
+  lastStream?: StreamKind
   createdAt: number
   updatedAt: number
   lastActive: number
@@ -92,6 +104,8 @@ export interface Message {
   campaignId: number
   role: 'user' | 'assistant' | 'system'
   content: string           // 原始内容（assistant 为未解析 XML 原文，前端解析展示）
+  /** v1.2 双流：talk=交流栏（设计商谈），game=游戏流（跑团剧情）；缺省/旧数据视为 game */
+  stream?: StreamKind
   /** 解析后的展示结构（assistant）：正文/场景/选项/说书等 */
   parsedJson?: string
   /** usage：{prompt_tokens, completion_tokens, total_tokens, costYuan?} */

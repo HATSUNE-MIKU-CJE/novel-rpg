@@ -1,13 +1,13 @@
 import { defineStore } from 'pinia'
 import { toRaw } from 'vue'
 import { db } from '../db'
-import type { Message, Campaign, ApiConfig, Entry, Worldbook } from '../types'
+import type { Message, Campaign, ApiConfig, Entry, StreamKind } from '../types'
 import { useDataStore } from './data'
 import { renderPromptChain, chatCompletion, type ChatUserMessage } from '../engine/pipeline'
 import { parseDreamPlot } from '../engine/dreamParser'
-import { buildDreamPromptBlocks, defaultDreamConfig, type DreamConfig } from '../engine/dreamPreset'
+import { buildDreamPromptBlocks, defaultDreamConfig, TALK_SYSTEM, type DreamConfig } from '../engine/dreamPreset'
 import { parseUsage, estimateCostYuan } from '../engine/pricing'
-import { extractFacts } from '../engine/extractor'
+import { extractFacts, extractJson, mergeAttrs } from '../engine/extractor'
 import { httpFetch } from '../engine/http'
 
 /** 剥离 Vue 响应式代理，得到 IndexedDB 可序列化的纯对象 */
@@ -16,7 +16,7 @@ function plainMsg<T>(obj: T): T {
 }
 
 /** 消息正文（assistant 取解析后的 body） */
-function bodyOfMsg(m: Message): string {
+export function bodyOfMsg(m: Message): string {
   if (m.role === 'user') return m.content
   try {
     const p = m.parsedJson ? JSON.parse(m.parsedJson) : null
@@ -27,9 +27,28 @@ function bodyOfMsg(m: Message): string {
 /** 上下文压缩：预算内 80% 触发 */
 export const COMPACT_RATIO = 0.8
 
+export interface SyncOutcome {
+  chars: number
+  rels: number
+  facts: number
+  skipped: boolean   // 素材过短未提炼
+}
+
+export interface StartGamePack {
+  worldview: string
+  opening: string
+}
+
+export interface SummaryPack {
+  title: string
+  events: Array<{ time?: string; place?: string; desc: string }>
+}
+
 export const useChatStore = defineStore('chat', {
   state: () => ({
-    messages: [] as Message[],
+    talkMessages: [] as Message[],       // 交流栏（设计商谈）
+    gameMessages: [] as Message[],       // 游戏栏（跑团剧情）
+    currentStream: 'talk' as StreamKind,
     currentCampaignId: 0,
     sending: false,
     compacting: false,
@@ -37,29 +56,42 @@ export const useChatStore = defineStore('chat', {
     error: '' as string,
   }),
   getters: {
+    /** 当前流的消息（UI 渲染用） */
+    messages(state): Message[] {
+      return state.currentStream === 'talk' ? state.talkMessages : state.gameMessages
+    },
     currentCampaign(state): Campaign | undefined {
       const ds = useDataStore()
       return ds.campaigns.find((c) => c.id === state.currentCampaignId)
     },
-    /** 存档累计 token */
+    /** 是否已开始游戏（游戏流可玩）；旧档缺字段视为已开始 */
+    inGame(): boolean {
+      const c = this.currentCampaign
+      return (c?.gameStarted ?? 1) !== 0
+    },
+    /** 存档累计 token（两流合计） */
     totalTokens(state): number {
       let n = 0
-      for (const m of state.messages) {
-        try {
-          const u = m.usageJson ? JSON.parse(m.usageJson) : null
-          if (u?.totalTokens) n += u.totalTokens
-        } catch { /* ignore */ }
+      for (const list of [state.talkMessages, state.gameMessages]) {
+        for (const m of list) {
+          try {
+            const u = m.usageJson ? JSON.parse(m.usageJson) : null
+            if (u?.totalTokens) n += u.totalTokens
+          } catch { /* ignore */ }
+        }
       }
       return n
     },
     /** 存档累计金额（仅 DeepSeek 折算） */
     totalCost(state): number {
       let c = 0
-      for (const m of state.messages) {
-        try {
-          const u = m.usageJson ? JSON.parse(m.usageJson) : null
-          if (u?.costYuan) c += u.costYuan
-        } catch { /* ignore */ }
+      for (const list of [state.talkMessages, state.gameMessages]) {
+        for (const m of list) {
+          try {
+            const u = m.usageJson ? JSON.parse(m.usageJson) : null
+            if (u?.costYuan) c += u.costYuan
+          } catch { /* ignore */ }
+        }
       }
       return Math.round(c * 10000) / 10000
     },
@@ -67,15 +99,36 @@ export const useChatStore = defineStore('chat', {
   actions: {
     async openCampaign(id: number) {
       this.currentCampaignId = id
-      this.messages = await db.messages.where('campaignId').equals(id).sortBy('seq')
+      const all = await db.messages.where('campaignId').equals(id).sortBy('seq')
+      this.talkMessages = all.filter((m) => (m.stream ?? 'game') === 'talk')
+      this.gameMessages = all.filter((m) => (m.stream ?? 'game') !== 'talk')
+      const c = this.currentCampaign
+      // v1.2 迁移：旧档（无 gameStarted）一律视为已开始（旧消息归游戏流）
+      if (c && c.gameStarted === undefined) {
+        c.gameStarted = 1
+        await useDataStore().saveCampaign(c)
+      }
+      // 未开始游戏 → 先进交流栏；已开始 → 记住上次停留的流
+      const started = (c?.gameStarted ?? 1) !== 0
+      this.currentStream = !started ? 'talk' : ((c?.lastStream as StreamKind) ?? 'game')
     },
 
-    /** 计算本轮命中的触发条目（触发词出现在最近 N 条消息中） */
+    /** 切换交流/游戏栏 */
+    async switchStream(s: StreamKind) {
+      this.currentStream = s
+      const c = this.currentCampaign
+      if (c) {
+        c.lastStream = s
+        await useDataStore().saveCampaign(c)
+      }
+    },
+
+    /** 计算本轮命中的触发条目（触发词出现在游戏流最近 N 条消息中） */
     collectInjectedEntries(worldbookIds: number[]): { constant: Entry[]; keyed: Entry[] } {
       const ds = useDataStore()
       const constant: Entry[] = []
       const keyed: Entry[] = []
-      const recentText = this.messages
+      const recentText = this.gameMessages
         .slice(-8)
         .map((m) => m.content)
         .join('\n')
@@ -95,6 +148,17 @@ export const useChatStore = defineStore('chat', {
       return { constant, keyed }
     },
 
+    /** 角色卡文本（charInject 开关：>0 时作为常驻注入游戏对话） */
+    async charCardsText(): Promise<string> {
+      const c = this.currentCampaign
+      if (!c?.id) return ''
+      const chars = await db.characters.where('campaignId').equals(c.id).toArray()
+      const lines = chars.map((ch) =>
+        `【角色卡 · ${ch.name}】${ch.identity ? ch.identity + '。' : ''}${ch.description ?? ''}`.trim()
+      )
+      return lines.join('\n')
+    },
+
     /** 解析存档的 DreamConfig；非内置预设/无配置时返回 null */
     dreamConfig(): DreamConfig | null {
       const c = this.currentCampaign
@@ -111,23 +175,40 @@ export const useChatStore = defineStore('chat', {
       } catch { return null }
     },
 
-    /** 获取渲染用 prompts 序列（内置预设 > 外部预设 > 简易兜底） */
-    async resolvePrompts(): Promise<Array<{ name: string; role: string; content: string; enabled: boolean }>> {
+    /** 交流栏 system：主持人格 + 已生效设定参考（世界书 + 角色卡） */
+    async buildTalkSystem(): Promise<string> {
+      const ds = useDataStore()
+      const c = this.currentCampaign
+      const parts = [TALK_SYSTEM]
+      if (c?.id) {
+        const bindings = await db.campaignBindings.where('campaignId').equals(c.id).toArray()
+        const wbIds = bindings.map((b) => b.worldbookId)
+        if (c.notebookWorldbookId) wbIds.push(c.notebookWorldbookId)
+        const lines: string[] = []
+        for (const wbId of wbIds) {
+          for (const e of ds.entriesOf(wbId)) {
+            if (!e.enabled || !e.content.trim()) continue
+            if (e.source === 'ai' && e.status !== 'accepted') continue
+            lines.push(`【${e.key ? e.key : '常驻'}】${e.content}`)
+          }
+        }
+        const charText = await this.charCardsText()
+        if (charText) lines.push(charText)
+        if (lines.length) parts.push(`【当前已生效的设定参考】\n${lines.join('\n').slice(0, 8000)}`)
+      }
+      return parts.join('\n\n')
+    },
+
+    /** 游戏流 prompts（预设链，强制写作模式；外部预设兜底） */
+    async resolveGamePrompts(): Promise<Array<{ name: string; role: string; content: string; enabled: boolean }>> {
       const ds = useDataStore()
       const campaign = this.currentCampaign!
       const cfg = this.dreamConfig()
-      const mode = (cfg?.output_mode as string | undefined) ?? 'writing'
-      // 聊天模式：一律不挂预设（预设只服务于写作跑团）
-      if (mode === 'chat') {
-        return [{
-          name: 'chat-light', role: 'system', enabled: true,
-          content: '你现在是“梦鲸思客”的闲聊人格：暂停梦境写作，以自然的语气和用户聊天。你可以开轻松玩笑、回应情绪，保持友好；不要输出 XML、不要扮演梦里的角色，就当一个会聊天的朋友。',
-        }]
-      }
       if (cfg) {
-        // 内置预设：写作/总结/创作走完整链
+        // v1.2：模式概念废弃，游戏流固定写作模式
+        const writing = { ...cfg, output_mode: 'writing' }
         const api = ds.getDefaultApi()
-        return buildDreamPromptBlocks(cfg, api?.model ?? '')
+        return buildDreamPromptBlocks(writing, api?.model ?? '')
       }
       if (campaign.presetId) {
         const preset = ds.presets.find((p) => p.id === campaign.presetId)
@@ -136,7 +217,7 @@ export const useChatStore = defineStore('chat', {
       return [{ name: 'default', role: 'system', content: '你是小说叙事 AI，请用中文推进故事。', enabled: true }]
     },
 
-    /** 主请求：发送用户消息 */
+    /** 主请求：发送用户消息（按当前流） */
     async sendUserMessage(text: string) {
       if (!this.currentCampaignId || !text.trim() || this.sending) return
       const ds = useDataStore()
@@ -148,56 +229,87 @@ export const useChatStore = defineStore('chat', {
 
       this.error = ''
 
-      const maxSeq = this.messages.length ? this.messages[this.messages.length - 1].seq : 0
+      const arr = this.currentStream === 'talk' ? this.talkMessages : this.gameMessages
+      const maxSeq = arr.length ? arr[arr.length - 1].seq : 0
       const userMsg: Message = {
         campaignId: this.currentCampaignId,
         role: 'user',
         content: text.trim(),
+        stream: this.currentStream,
         seq: maxSeq + 1,
         createdAt: Date.now(),
       }
-      await db.messages.add(userMsg)
-      this.messages.push({ ...userMsg, id: (userMsg as any).id })
+      await db.messages.add(plainMsg(userMsg))
+      arr.push({ ...userMsg, id: (userMsg as any).id })
 
       await this.requestAssistant(campaign, api)
     },
 
-    /** 手动重发：删除某轮的最后一条 assistant（及其后续），重新请求 */
+    /** 手动重发：删除当前流某轮的最后一条 assistant（及其后续），重新请求 */
     async regenerate() {
       const campaign = this.currentCampaign
       if (!campaign || this.sending) return
-      const last = [...this.messages].reverse().find((m) => m.role === 'assistant')
+      const arr = this.currentStream === 'talk' ? this.talkMessages : this.gameMessages
+      const last = [...arr].reverse().find((m) => m.role === 'assistant')
       if (!last) return
-      // 删除该条 assistant 及其后的所有消息
-      const doomed = this.messages.filter((m) => (m.seq ?? 0) >= (last.seq ?? 0))
+      const doomed = arr.filter((m) => (m.seq ?? 0) >= (last.seq ?? 0))
       await db.messages.bulkDelete(doomed.map((m) => m.id!).filter(Boolean))
-      this.messages = this.messages.filter((m) => (m.seq ?? 0) < (last.seq ?? 0))
+      const kept = arr.filter((m) => (m.seq ?? 0) < (last.seq ?? 0))
+      if (this.currentStream === 'talk') this.talkMessages = kept
+      else this.gameMessages = kept
       const api = useDataStore().getDefaultApi()
       if (!api) { this.error = '请先配置 API'; return }
       await this.requestAssistant(campaign, api)
     },
 
-    /** 共享助理请求逻辑（含：上下文压缩检测 + usage 记录 + 统计） */
+    /** 共享助理请求逻辑（按流分派） */
     async requestAssistant(campaign: Campaign, api: ApiConfig) {
-      const ds = useDataStore()
-      const prompts = await this.resolvePrompts()
+      if (this.currentStream === 'talk') await this.requestTalk(campaign, api)
+      else await this.requestGame(campaign, api)
+    },
+
+    /** 交流栏请求：主持人格 + 纯文本历史（不注入世界书/变量/预设宏） */
+    async requestTalk(campaign: Campaign, api: ApiConfig) {
+      const system = await this.buildTalkSystem()
+      const msgs: ChatUserMessage[] = [{ role: 'system', content: system }]
+      for (const m of this.talkMessages) {
+        if (m.role === 'system') continue
+        msgs.push({ role: m.role as 'user' | 'assistant', content: m.content })
+      }
+      await this.chatCompletionAndAppend(msgs, campaign, api, 'talk')
+    },
+
+    /** 游戏流请求：完整预设链 + 世界书注入 + 变量宏 */
+    async requestGame(campaign: Campaign, api: ApiConfig) {
+      const prompts = await this.resolveGamePrompts()
 
       const bindings = await db.campaignBindings.where('campaignId').equals(this.currentCampaignId).toArray()
       const wbIds = bindings.map((b) => b.worldbookId)
       // 自动笔记簿始终参与注入（其内 pending 条目已被过滤）
       if (campaign.notebookWorldbookId) wbIds.push(campaign.notebookWorldbookId)
       const { constant, keyed } = this.collectInjectedEntries(wbIds)
+      // v1.2：角色卡注入开关（默认开）
+      if ((campaign.charInject ?? 1) !== 0) {
+        const charText = await this.charCardsText()
+        if (charText) {
+          constant.push({
+            worldbookId: campaign.notebookWorldbookId ?? 0,
+            key: '', content: charText, enabled: 1, source: 'manual',
+            createdAt: 0, updatedAt: 0,
+          })
+        }
+      }
 
       // 变量存储
       const vars = new Map<string, string>()
       try { Object.entries(JSON.parse(campaign.varsJson || '{}')).forEach(([k, v]) => vars.set(k, String(v))) } catch { /* ignore */ }
       const persistVars = () => {
         campaign.varsJson = JSON.stringify(Object.fromEntries(vars))
-        ds.saveCampaign(campaign)
+        ds().saveCampaign(campaign)
       }
 
-      // 上下文：摘要 + 未压缩历史
-      let history = this.messages.filter((m) => m.role !== 'system')
+      // 上下文：摘要 + 未压缩历史（仅游戏流）
+      let history = this.gameMessages.filter((m) => m.role !== 'system')
       if ((campaign.summarizedSeq ?? 0) > 0) {
         history = history.filter((m) => (m.seq ?? 0) > (campaign.summarizedSeq ?? 0))
       }
@@ -226,20 +338,36 @@ export const useChatStore = defineStore('chat', {
         add: (n, v) => { vars.set(n, (vars.get(n) ?? '') + v); persistVars() },
       })
 
+      await this.chatCompletionAndAppend(msgs, campaign, api, 'game')
+
+      // 每 N 轮自动同步游戏流 → 世界书（原「自动整理」）
+      const interval = campaign.autoInterval ?? 0
+      if (interval > 0 && !this.organizing) {
+        const lastOrg = campaign.lastOrganized ?? 0
+        const recentUsers = this.gameMessages
+          .filter((m) => m.role === 'user' && m.createdAt > lastOrg).length
+        if (recentUsers >= interval) this.syncFrom('game')
+      }
+    },
+
+    /** 请求 + 落库 + 统计（两流共用） */
+    async chatCompletionAndAppend(msgs: ChatUserMessage[], campaign: Campaign, api: ApiConfig, stream: StreamKind) {
       this.sending = true
       try {
         const reply = await chatCompletionFull(api, msgs)
-        const parsed = parseDreamPlot(reply.content)
+        const parsed = stream === 'game' ? parseDreamPlot(reply.content) : null
         const usage = reply.usage
         const cost = usage && estimateCostYuan(api.model, usage, new Date())
-
         const costYuan = cost?.costYuan
-        const maxSeq = this.messages.length ? this.messages[this.messages.length - 1].seq : 0
+
+        const arr = stream === 'talk' ? this.talkMessages : this.gameMessages
+        const maxSeq = arr.length ? arr[arr.length - 1].seq : 0
         const asstMsg: Message = {
           campaignId: this.currentCampaignId,
           role: 'assistant',
           content: reply.content,
-          parsedJson: JSON.stringify(parsed),
+          stream,
+          parsedJson: parsed ? JSON.stringify(parsed) : undefined,
           reasoning: reply.reasoning?.trim() ? reply.reasoning.trim() : undefined,
           usageJson: usage ? JSON.stringify({
             promptTokens: usage.promptTokens,
@@ -251,8 +379,8 @@ export const useChatStore = defineStore('chat', {
           seq: maxSeq + 1,
           createdAt: Date.now(),
         }
-        await db.messages.add(asstMsg)
-        this.messages.push({ ...asstMsg, id: (asstMsg as any).id })
+        await db.messages.add(plainMsg(asstMsg))
+        arr.push({ ...asstMsg, id: (asstMsg as any).id })
 
         // 统计累计
         if (usage) {
@@ -260,26 +388,13 @@ export const useChatStore = defineStore('chat', {
           if (costYuan) campaign.statCostYuan = (campaign.statCostYuan ?? 0) + costYuan
         }
         campaign.lastActive = Date.now()
-        await ds.saveCampaign(campaign)
+        await ds().saveCampaign(campaign)
 
-        // 自动上下文压缩检测（80% 预算）
-        if (usage && campaign.ctxBudget && campaign.ctxBudget > 0) {
+        // 自动上下文压缩检测（80% 预算，仅游戏流有摘要机制）
+        if (stream === 'game' && usage && campaign.ctxBudget && campaign.ctxBudget > 0) {
           if (usage.promptTokens > campaign.ctxBudget * COMPACT_RATIO) {
             this.compactContext(campaign)
           }
-        }
-
-        // M4：每 N 轮自动整理世界书（异步，不阻塞）
-        const interval = campaign.autoInterval ?? 0
-        if (interval > 0 && !this.organizing) {
-          // 距上次整理已超过 N 轮用户消息，或从未整理过
-          const lastOrg = campaign.lastOrganized ?? 0
-          const need = (() => {
-            const recentUsers = this.messages
-              .filter((m) => m.role === 'user' && m.createdAt > lastOrg).length
-            return recentUsers >= interval
-          })()
-          if (need) this.organizeWorldbook()
         }
       } catch (e: any) {
         this.error = e?.message || String(e)
@@ -289,8 +404,7 @@ export const useChatStore = defineStore('chat', {
     },
 
     /**
-     * 上下文压缩：把已压缩点之前的消息摘要为一段文本。
-     * 触发：手动 或 自动（预算 80%）。
+     * 上下文压缩：把已压缩点之前的消息摘要为一段文本（游戏流专用）。
      */
     async compactContext(campaign?: Campaign) {
       const c = campaign ?? this.currentCampaign
@@ -300,7 +414,7 @@ export const useChatStore = defineStore('chat', {
       if (!api) { this.error = '压缩需要 API 配置'; return }
 
       const cutoff = c.summarizedSeq ?? 0
-      const toSummarize = this.messages.filter((m) => (m.seq ?? 0) > cutoff && m.role !== 'system')
+      const toSummarize = this.gameMessages.filter((m) => (m.seq ?? 0) > cutoff && m.role !== 'system')
       if (toSummarize.length === 0) return
 
       // 保留最近 12 条不缩（保持细节），压缩更早的
@@ -315,7 +429,7 @@ export const useChatStore = defineStore('chat', {
       this.error = ''
       try {
         const text = compactArr
-          .map((m) => (m.role === 'user' ? `梦客：${m.content}` : `思客：${m.content}`))
+          .map((m) => (m.role === 'user' ? `梦客：${m.content}` : `思客：${bodyOfMsg(m)}`))
           .join('\n\n')
 
         const summary = await chatCompletion(api, [
@@ -331,7 +445,7 @@ export const useChatStore = defineStore('chat', {
         // 清理被压缩的消息（保留最近 keep 条）
         const doomedIds = compactArr.map((m) => m.id!).filter(Boolean)
         if (doomedIds.length) await db.messages.bulkDelete(doomedIds)
-        this.messages = this.messages.filter((m) => !doomedIds.includes(m.id!))
+        this.gameMessages = this.gameMessages.filter((m) => !doomedIds.includes(m.id!))
       } catch (e: any) {
         this.error = `压缩失败：${e?.message || e}`
       } finally {
@@ -340,53 +454,57 @@ export const useChatStore = defineStore('chat', {
     },
 
     /**
-     * M4：整理世界书（AI 事实提取 → 自动笔记簿 pending 条目 + 角色/关系增量更新）。
-     * 手动按钮与「每 N 轮自动触发」都走这个入口。
+     * v1.2：按来源流增量提炼（交流流 → 游戏设定；游戏流 → 世界书）。
+     * 写角色（含属性）/关系/笔记簿 pending 条目；游标推进，接受后才生效。
      */
-    async organizeWorldbook(): Promise<void> {
-      if (!this.currentCampaignId || this.sending || this.compacting) return
+    async syncFrom(source: StreamKind): Promise<SyncOutcome> {
+      if (!this.currentCampaignId) return { chars: 0, rels: 0, facts: 0, skipped: true }
       const ds = useDataStore()
       const campaign = this.currentCampaign
-      if (!campaign) return
+      if (!campaign) return { chars: 0, rels: 0, facts: 0, skipped: true }
       const api = ds.getDefaultApi()
       if (!api || !api.apiKey) {
-        this.error = '整理世界书需要 API 配置'
-        return
+        this.error = '同步需要 API 配置'
+        return { chars: 0, rels: 0, facts: 0, skipped: true }
       }
+
+      const msgs = source === 'talk' ? this.talkMessages : this.gameMessages
+      const lastSeq = source === 'talk' ? (campaign.lastSyncedTalkSeq ?? 0) : (campaign.lastSyncedGameSeq ?? 0)
+      const recent = msgs.filter((m) => (m.seq ?? 0) > lastSeq)
+      if (recent.length === 0) return { chars: 0, rels: 0, facts: 0, skipped: true }
+      const text = recent
+        .map((m) => (m.role === 'user' ? `梦客：${m.content}` : `思客：${bodyOfMsg(m)}`))
+        .join('\n\n')
+      if (text.trim().length < 40) return { chars: 0, rels: 0, facts: 0, skipped: true }
 
       this.organizing = true
       this.error = ''
       try {
-        // 1. 最近对话文本（最近 24 条，取解析后的正文）
-        const recent = this.messages.slice(-24)
-        const recentText = recent.map((m) =>
-          m.role === 'user' ? `梦客：${m.content}` : `思客：${bodyOfMsg(m)}`,
-        ).join('\n\n')
-        if (!recentText.trim()) return
-
         // 2. 已有实体（增量去重）
         const chars = await db.characters.where('campaignId').equals(this.currentCampaignId).toArray()
         const rels = await db.relations.where('campaignId').equals(this.currentCampaignId).toArray()
         const notebook = await this.ensureNotebook()
-        const notebookEntries = db.entries && notebook.id
-          ? ds.entriesOf(notebook.id)
-          : []
+        const notebookEntries = notebook.id ? ds.entriesOf(notebook.id) : []
 
         const result = await extractFacts(api, {
           characters: chars.map((c) => c.name),
           relations: rels.map((r) => `${r.fromChar}|${r.toChar}|${r.relType}`),
-          facts: notebookEntries.filter((e) => e.source !== 'ai' || e.status === 'accepted').map((e) => e.key),
-          recentText,
+          // 已有事实触发词：手动/导入 + AI（含 pending，防止重复提取）
+          facts: notebookEntries.filter((e) => e.status !== 'rejected').map((e) => e.key),
+          recentText: text,
         })
 
-        // 3. 写角色（按名字增量更新）
+        // 3. 写角色（按名字增量更新，属性合并）
         let newChars = 0, updChars = 0
         for (const c of result.characters) {
           const exist = chars.find((x) => x.name === c.name)
+          const attrsJson = mergeAttrs(exist?.attributesJson, c.attributes)
           if (exist) {
-            if (c.description && c.description !== exist.description) {
-              exist.description = c.description
+            if ((c.description && c.description !== exist.description) || attrsJson !== exist.attributesJson) {
+              exist.description = c.description ?? exist.description
               exist.identity = c.identity ?? exist.identity
+              if (attrsJson !== undefined) exist.attributesJson = attrsJson
+              exist.source = exist.source || 'ai'
               exist.updatedAt = Date.now()
               await db.characters.put(plainMsg(exist))
               updChars++
@@ -395,6 +513,7 @@ export const useChatStore = defineStore('chat', {
             await db.characters.add(plainMsg({
               campaignId: this.currentCampaignId,
               name: c.name, identity: c.identity ?? '', description: c.description ?? '',
+              attributesJson: attrsJson,
               source: 'ai', createdAt: Date.now(), updatedAt: Date.now(),
             }))
             newChars++
@@ -429,17 +548,141 @@ export const useChatStore = defineStore('chat', {
           newFacts++
         }
 
+        if (source === 'talk') campaign.lastSyncedTalkSeq = recent[recent.length - 1].seq
+        else campaign.lastSyncedGameSeq = recent[recent.length - 1].seq
         campaign.lastOrganized = Date.now()
         campaign.organizeStats = JSON.stringify({
           chars: newChars + updChars, rels: newRels, facts: newFacts, at: Date.now(),
         })
         await ds.saveCampaign(campaign)
         await ds.loadAll()
+        return { chars: newChars + updChars, rels: newRels, facts: newFacts, skipped: false }
       } catch (e: any) {
-        this.error = `整理失败：${e?.message || e}`
+        this.error = `同步失败：${e?.message || e}`
+        return { chars: 0, rels: 0, facts: 0, skipped: true }
       } finally {
         this.organizing = false
       }
+    },
+
+    /** 兼容旧入口：面板「整理世界书」= 游戏流 → 世界书 */
+    async organizeWorldbook(): Promise<void> {
+      await this.syncFrom('game')
+    },
+
+    /**
+     * 开始游戏 第一步：提炼交流流 + AI 生成开局包（世界观要点 + 开场白）。
+     */
+    async prepareStartGame(): Promise<StartGamePack | null> {
+      const campaign = this.currentCampaign
+      if (!campaign) return null
+      await this.syncFrom('talk')
+      const ds = useDataStore()
+      const api = ds.getDefaultApi()
+      if (!api || !api.apiKey) { this.error = '开始游戏需要 API 配置'; return null }
+
+      const talkText = this.talkMessages
+        .map((m) => (m.role === 'user' ? `梦客：${m.content}` : `思客：${m.content}`))
+        .join('\n\n')
+        .slice(-60000)
+      if (!talkText.trim()) { this.error = '交流栏还没有内容'; return null }
+
+      try {
+        const reply = await chatCompletion(api, [
+          {
+            role: 'system',
+            content: '你是梦境游戏的开局设计师。根据玩家与游戏设计主持的交流内容，提炼开局包。输出严格 JSON（不要输出其他文字、不要代码块）：{"worldview":"世界观要点，2-3句，凝练，涵盖玩家确定的基调与禁项","opening":"开场白正文，200-400字，用第二人称叙述，点明玩家角色与初始场景，直接进入剧情氛围，不要包含任何 XML 标签"}',
+          },
+          { role: 'user', content: talkText },
+        ])
+        const parsed = extractJson<StartGamePack>(reply)
+        if (!parsed?.worldview) return null
+        return { worldview: parsed.worldview, opening: parsed.opening ?? '' }
+      } catch (e: any) {
+        this.error = `生成开局包失败：${e?.message || e}`
+        return null
+      }
+    },
+
+    /**
+     * 开始游戏 第二步：落档（gameStarted=1）+ 写入开场白（可选）+ 切游戏栏。
+     */
+    async commitStartGame(opening: string, withOpening: boolean) {
+      const campaign = this.currentCampaign
+      if (!campaign) return
+      campaign.gameStarted = 1
+      campaign.lastSyncedTalkSeq = Math.max(campaign.lastSyncedTalkSeq ?? 0, this.talkMessages[this.talkMessages.length - 1]?.seq ?? 0)
+      if (withOpening && opening.trim()) {
+        const maxSeq = this.gameMessages.length ? this.gameMessages[this.gameMessages.length - 1].seq : 0
+        const m: Message = {
+          campaignId: this.currentCampaignId,
+          role: 'assistant',
+          content: opening.trim(),
+          stream: 'game',
+          parsedJson: JSON.stringify({ kind: 'opening', body: opening.trim() }),
+          seq: maxSeq + 1,
+          createdAt: Date.now(),
+        }
+        await db.messages.add(plainMsg(m))
+        this.gameMessages.push({ ...m, id: (m as any).id })
+      }
+      await ds().saveCampaign(campaign)
+      this.currentStream = 'game'
+      campaign.lastStream = 'game'
+    },
+
+    /**
+     * 游戏栏「📜 总结」：把游戏流剧情总结为章节回顾卡，写回游戏流。
+     */
+    async generateSummary(): Promise<SummaryPack | null> {
+      const campaign = this.currentCampaign
+      if (!campaign) return null
+      const ds = useDataStore()
+      const api = ds.getDefaultApi()
+      if (!api || !api.apiKey) { this.error = '总结需要 API 配置'; return null }
+
+      const text = this.gameMessages
+        .filter((m) => m.role !== 'system')
+        .map((m) => (m.role === 'user' ? `梦客：${m.content}` : `思客：${bodyOfMsg(m)}`))
+        .join('\n\n')
+        .slice(-50000)
+      if (!text.trim()) { this.error = '游戏流还没有剧情'; return null }
+
+      this.organizing = true
+      try {
+        const reply = await chatCompletion(api, [
+          {
+            role: 'system',
+            content: '你是剧情回顾师。把玩家提供的跑团剧情整理成一章回顾。输出严格 JSON（不要输出其他文字、不要代码块）：{"title":"章节标题，8-14字","events":[{"time":"时间（可空，如：第二天上午）","place":"地点（可空）","desc":"事件，1-2句"}]}。events 按剧情顺序，4-10 条。',
+          },
+          { role: 'user', content: `请回顾以下剧情：\n\n${text}` },
+        ])
+        const parsed = extractJson<SummaryPack>(reply)
+        if (!parsed?.title || !Array.isArray(parsed.events) || !parsed.events.length) return null
+        await this.appendSummaryCard(parsed)
+        return parsed
+      } catch (e: any) {
+        this.error = `总结失败：${e?.message || e}`
+        return null
+      } finally {
+        this.organizing = false
+      }
+    },
+
+    /** 把回顾卡写回游戏流（可回看） */
+    async appendSummaryCard(s: SummaryPack) {
+      const maxSeq = this.gameMessages.length ? this.gameMessages[this.gameMessages.length - 1].seq : 0
+      const m: Message = {
+        campaignId: this.currentCampaignId,
+        role: 'assistant',
+        content: `📜 ${s.title}`,
+        stream: 'game',
+        parsedJson: JSON.stringify({ kind: 'summary', title: s.title, events: s.events }),
+        seq: maxSeq + 1,
+        createdAt: Date.now(),
+      }
+      await db.messages.add(plainMsg(m))
+      this.gameMessages.push({ ...m, id: (m as any).id })
     },
 
     /** 获取/创建存档专属的「自动笔记簿」世界书 */
@@ -450,10 +693,10 @@ export const useChatStore = defineStore('chat', {
         const wb = ds.worldbooks.find((w) => w.id === c.notebookWorldbookId)
         if (wb) return wb
       }
-      const wb: Worldbook = {
+      const wb = {
         name: `${c.name} · 自动笔记簿`,
         description: 'AI 提取的世界书事实（审阅后生效）',
-        scope: 'campaign',
+        scope: 'campaign' as const,
         createdAt: Date.now(), updatedAt: Date.now(),
       }
       const id = await db.worldbooks.add(plainMsg(wb))
@@ -464,6 +707,11 @@ export const useChatStore = defineStore('chat', {
     },
   },
 })
+
+/** Pinia store 外部取 ds（避免 action 内循环依赖） */
+function ds() {
+  return useDataStore()
+}
 
 interface FullReply { content: string; usage: any; reasoning?: string }
 

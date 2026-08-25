@@ -10,6 +10,9 @@ const chat = useChatStore()
 const cfg = computed<DreamConfig>(() => chat.dreamConfig() ?? { custom: {} })
 const currentCampaign = computed(() => chat.currentCampaign)
 
+/** v1.2：输出模式组废弃（写作/交流已分为双栏），不展示 */
+const visibleGroups = computed(() => DREAM_GROUPS.filter((g) => g.id !== 'output_mode'))
+
 /** 展开的选项（groupId + optionId），仅一个同时展开 */
 const expanded = ref('')
 
@@ -96,6 +99,13 @@ const advancedOptions = computed(() => {
       当前存档：{{ currentCampaign.name }} · 修改即时生效（下一轮对话使用）
     </div>
 
+    <div class="card" style="margin-bottom: 12px; border: 1px dashed var(--accent)">
+      <div class="list-sub" style="line-height: 1.6">
+        💬 v1.2：交流与游戏已分为<strong>双栏</strong>——本页所有开关只作用于 🎮 游戏栏的写作推进；
+        💬 交流栏独立使用「设计主持」人格（设置 → API 页面无关联）。
+      </div>
+    </div>
+
     <!-- 高级区提示（自动渠道默认隐藏） -->
     <div v-if="showAdvanced" class="advanced-box card" style="margin-bottom: 12px">
       <div style="margin-bottom: 8px"><b>⚙️ 高级选项（渠道手动档）</b></div>
@@ -121,7 +131,7 @@ const advancedOptions = computed(() => {
       </div>
     </div>
 
-    <div v-for="g in DREAM_GROUPS" :key="g.id" class="card" style="margin-bottom: 12px">
+    <div v-for="g in visibleGroups" :key="g.id" class="card" style="margin-bottom: 12px">
       <div style="display:flex; align-items:center; margin-bottom: 4px">
         <b>{{ g.icon }} {{ g.label }}</b>
         <span class="list-sub" style="margin-left:8px">

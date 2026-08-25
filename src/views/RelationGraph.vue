@@ -6,8 +6,9 @@ const props = defineProps<{
   characters: Character[]
   relations: Relation[]
 }>()
+const emit = defineEmits<{ open: [Character] }>()
 
-const selected = ref<Character | null>(null)
+const selected = ref<string | null>(null)
 
 interface NodePos { x: number; y: number; vx: number; vy: number }
 
@@ -77,9 +78,14 @@ function charOf(name: string): Character | undefined {
 const selectedRelations = computed(() => {
   if (!selected.value) return []
   return props.relations.filter(
-    (r) => r.fromChar === selected.value!.name || r.toChar === selected.value!.name,
+    (r) => r.fromChar === selected.value || r.toChar === selected.value,
   )
 })
+
+function clickNode(c: Character) {
+  selected.value = c.name
+  emit('open', c)
+}
 </script>
 
 <template>
@@ -106,44 +112,24 @@ const selectedRelations = computed(() => {
           v-if="positions[c.name]"
           :cx="positions[c.name].x" :cy="positions[c.name].y"
           r="17"
-          :fill="selected?.name === c.name ? 'var(--accent)' : 'var(--accent-soft)'"
-          :stroke="selected?.name === c.name ? 'var(--accent-deep)' : 'var(--accent)'"
+          :fill="selected === c.name ? 'var(--accent)' : 'var(--accent-soft)'"
+          :stroke="selected === c.name ? 'var(--accent-deep)' : 'var(--accent)'"
           stroke-width="1.4"
           style="cursor:pointer"
-          @click.stop="selected = c"
+          @click.stop="clickNode(c)"
         />
         <text
           v-if="positions[c.name]"
           :x="positions[c.name].x" :y="positions[c.name].y + 4"
           text-anchor="middle" font-size="10.5"
-          :fill="selected?.name === c.name ? '#fff' : 'var(--accent-deep)'"
+          :fill="selected === c.name ? '#fff' : 'var(--accent-deep)'"
           style="pointer-events:none"
         >{{ c.name.slice(0, 4) }}</text>
       </g>
     </svg>
 
-    <!-- 选中角色卡 -->
-    <div v-if="selected" class="rel-card card">
-      <div style="display:flex; align-items:center; gap:10px">
-        <div class="char-avatar" style="width:36px; height:36px; font-size:17px; margin:0">
-          {{ selected.name.slice(0, 1) }}
-        </div>
-        <div style="flex:1">
-          <div class="list-title">{{ selected.name }}</div>
-          <div class="list-sub">{{ selected.identity || '身份未知' }}</div>
-        </div>
-        <button class="btn btn-ghost btn-sm" @click="selected = null">×</button>
-      </div>
-      <div v-if="selected.description" class="list-sub" style="margin-top:8px">
-        {{ selected.description }}
-      </div>
-      <div v-if="selectedRelations.length" style="margin-top:8px">
-        <div class="list-sub" style="margin-bottom:4px">关系：</div>
-        <div v-for="r in selectedRelations" :key="r.id" class="rel-line">
-          {{ r.toChar === selected.name ? '←' : '→' }} {{ r.toChar === selected.name ? r.fromChar : r.toChar }}
-          <span class="list-sub">（{{ r.relType }} {{ r.label || '' }}）</span>
-        </div>
-      </div>
+    <div v-if="selectedRelations.length" class="list-sub" style="margin-top:4px">
+      点亮的节点已选中 —— 详情见弹层
     </div>
   </div>
 </template>

@@ -6,6 +6,7 @@ import { useChatStore } from '../stores/chat'
 import { formatSpecMarkdown, formatSpecSchema } from '../engine/specExport'
 import { exportFile } from '../engine/exportFile'
 import RelationGraph from './RelationGraph.vue'
+import CharacterDetail from './CharacterDetail.vue'
 import type { Character, Relation, Worldbook, Entry } from '../types'
 
 const ds = useDataStore()
@@ -69,7 +70,7 @@ const organizeStats = computed(() => {
 })
 
 async function organizeNow() {
-  if (!chat.messages.length) {
+  if (!chat.talkMessages.length && !chat.gameMessages.length) {
     alert('先聊几轮，让 AI 认识角色吧')
     return
   }
@@ -222,6 +223,11 @@ function openEdit(e: Entry) {
   editEntry.value = { ...e }
   showEntryEditor.value = true
 }
+
+// ---- 角色详情弹层 ----
+const charDetail = ref<Character | null>(null)
+function openDetail(c: Character) { charDetail.value = c }
+async function onCharSaved() { await refreshChars() }
 </script>
 
 <template>
@@ -242,7 +248,7 @@ function openEdit(e: Entry) {
         角色会在 AI 整理世界书时自动生长<br />（或用下方按钮手动整理）
       </div>
       <div class="char-card-grid">
-        <div v-for="c in characters" :key="c.id" class="char-card">
+        <div v-for="c in characters" :key="c.id" class="char-card" @click="openDetail(c)">
           <div class="char-avatar">{{ c.name.slice(0, 1) }}</div>
           <div class="list-title">{{ c.name }}</div>
           <div class="list-sub">{{ c.identity || '身份未知' }}</div>
@@ -273,7 +279,7 @@ function openEdit(e: Entry) {
       <div v-if="!relations.length" class="empty-hint">
         关系网络会在 AI 整理时自动生成<br />或用「角色」Tab 的整理按钮
       </div>
-      <RelationGraph v-else :characters="characters" :relations="relations" />
+      <RelationGraph v-else :characters="characters" :relations="relations" @open="openDetail" />
       <div v-if="relations.length" class="list-sub" style="margin-top:10px">
         点击节点查看角色卡与关系详情
       </div>
@@ -390,6 +396,14 @@ function openEdit(e: Entry) {
         <button class="btn btn-primary btn-block" @click="saveVar">保存</button>
       </div>
     </div>
+
+    <!-- 角色详情弹层 -->
+    <CharacterDetail
+      v-if="charDetail"
+      :character="charDetail"
+      @close="charDetail = null"
+      @saved="onCharSaved"
+    />
 
     <!-- 条目编辑器 -->
     <div v-if="showEntryEditor && editEntry" class="modal-mask" @click.self="showEntryEditor = false">

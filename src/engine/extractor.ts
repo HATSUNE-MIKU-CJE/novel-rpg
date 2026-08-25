@@ -15,6 +15,8 @@ export interface ExtractedCharacter {
   name: string
   identity?: string
   description?: string
+  /** 角色面板属性（自由命名，0-10 打分），用于雷达图 */
+  attributes?: Array<{ label: string; value: number }>
 }
 
 export interface ExtractedRelation {
@@ -45,11 +47,26 @@ export interface ExistingEntities {
   recentText: string
 }
 
+/** 合并提取属性到已有 attributesJson：新 label 覆盖/追加，保留前 6 条 */
+export function mergeAttrs(
+  existing: string | undefined,
+  add: Array<{ label: string; value: number }> | undefined,
+): string | undefined {
+  if (!add?.length) return existing
+  const map = new Map<string, number>()
+  try {
+    const arr = JSON.parse(existing || '[]') as Array<{ label?: string; value?: number }>
+    if (Array.isArray(arr)) for (const a of arr) if (a?.label) map.set(String(a.label), Number(a.value) || 0)
+  } catch { /* 忽略坏数据 */ }
+  for (const a of add) map.set(a.label, a.value)
+  return JSON.stringify([...map.entries()].slice(0, 6).map(([label, value]) => ({ label, value })))
+}
+
 const SYSTEM_PROMPT = `你是梦境世界书的「书记官」。阅读一段 AI 跑团对话，提取其中值得沉淀到世界书的新信息。
 
 输出严格 JSON（不要输出任何其他文字、不要代码块），格式：
 {
-  "characters": [{"name": "角色名", "identity": "身份/地位", "description": "一两句关键特征"}],
+  "characters": [{"name": "角色名", "identity": "身份/地位", "description": "一两句关键特征", "attributes": [{"label": "属性名", "value": 7}]}],
   "relations": [{"from": "甲", "to": "乙", "relType": "关系类型", "label": "简要描述"}],
   "facts": [{"key": "触发词，多个用逗号分隔，可以为空表示常驻", "content": "一条事实，一句到两句"}]
 }
@@ -57,11 +74,12 @@ const SYSTEM_PROMPT = `你是梦境世界书的「书记官」。阅读一段 AI
 规则：
 1. 只提取「新的」或「发生了变化的」信息。已有的不要重复提取。
 2. characters：新的重要角色；或已知角色的重要变化（身份、状态转折）。
-3. relations：新出现或变化的关系（亲缘/敌友/恋人/师徒等）。
-4. facts：世界观设定、地点、物品、重要事件、剧情转折。一条事实一记，不要大段复制原文。
-5. 名字用对话中的原称。无法确定名字的次要角色不提取。
-6. 如果某类没有新内容，输出空数组。
-7. 全部用中文。`
+3. attributes：从对话线索推断的角色面板属性（力量/智力/魅力/胆识…自由命名，0-10 整数打分）；每角色最多 6 条；没有可靠线索就给空数组。
+4. relations：新出现或变化的关系（亲缘/敌友/恋人/师徒等）。
+5. facts：世界观设定、地点、物品、重要事件、剧情转折。一条事实一记，不要大段复制原文。
+6. 名字用对话中的原称。无法确定名字的次要角色不提取。
+7. 如果某类没有新内容，输出空数组。
+8. 全部用中文。`
 
 /** 从模型输出中提取 JSON（容错：剥离代码块、找首尾大括号） */
 export function extractJson<T>(raw: string): T | null {
@@ -90,7 +108,19 @@ export function extractJson<T>(raw: string): T | null {
 export function sanitizeResult(parsed: Partial<ExtractResult>): ExtractResult {
   return {
     characters: Array.isArray(parsed.characters)
-      ? parsed.characters.filter(c => c?.name && String(c.name).trim())
+      ? parsed.characters
+          .filter(c => c?.name && String(c.name).trim())
+          .map(c => ({
+            name: String(c.name).trim(),
+            identity: c.identity?.trim() || undefined,
+            description: c.description?.trim() || undefined,
+            attributes: Array.isArray(c.attributes)
+              ? c.attributes
+                  .filter(a => a?.label?.trim() && typeof a.value === 'number' && isFinite(a.value))
+                  .slice(0, 6)
+                  .map(a => ({ label: String(a.label).trim(), value: Math.max(0, Math.min(10, Math.round(a.value))) }))
+              : undefined,
+          }))
       : [],
     relations: Array.isArray(parsed.relations)
       ? parsed.relations.filter(r => r?.from?.trim() && r?.to?.trim())

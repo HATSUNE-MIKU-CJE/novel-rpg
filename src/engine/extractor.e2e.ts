@@ -17,8 +17,8 @@ const mockReply = `好的，以下是我提取的内容：
 \`\`\`json
 {
   "characters": [
-    {"name": "艾莉丝", "identity": "见习法师", "description": "银发少女，铁炉堡东境的见习法师，随身带着旧魔法书。"},
-    {"name": "铁锤·铜须", "identity": "铁炉堡卫队长", "description": "魁梧的矮人，对陌生人戒备，但尊重勇气。"}
+    {"name": "艾莉丝", "identity": "见习法师", "description": "银发少女，铁炉堡东境的见习法师，随身带着旧魔法书。", "attributes": [{"label": "智力", "value": 8}, {"label": "胆识", "value": 6}, {"label": "武力", "value": 15}]},
+    {"name": "铁锤·铜须", "identity": "铁炉堡卫队长", "description": "魁梧的矮人，对陌生人戒备，但尊重勇气。", "attributes": [{"label": "力量", "value": 9.3}, {"label": "", "value": 5}]}
   ],
   "relations": [
     {"from": "艾莉丝", "to": "铁锤·铜须", "relType": "敌人", "label": "初次见面互有敌意"}
@@ -69,6 +69,9 @@ check('关系提取', result.relations.length === 1 && result.relations[0].relTy
 check('事实提取 ×2', result.facts.length === 2, `got ${result.facts.length}`)
 check('常驻事实（key 空）', result.facts.some((f) => f.key === ''))
 check('触发事实带 key', result.facts.some((f) => f.key.includes('铁炉堡')))
+check('属性提取：武力钳到 10', result.characters[0].attributes?.find((a) => a.label === '武力')?.value === 10)
+check('属性提取：9.3 四舍五入 9', result.characters[1].attributes?.find((a) => a.label === '力量')?.value === 9)
+check('属性提取：空 label 被过滤', result.characters[1].attributes?.length === 1)
 
 console.log('【数据质量过滤（sanitizeResult）】')
 const parsed = extractJson<ExtractResult>('{"characters":[{"name":"甲"},{"name":""},{"name":"乙","description":"x"}],"relations":[{"from":"a","to":"b","relType":"友"},{"from":"","to":"b","relType":"友"}],"facts":[{"key":"k","content":"内容"},{"key":"k","content":""}]}')
