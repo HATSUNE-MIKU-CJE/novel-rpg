@@ -12,7 +12,7 @@ const downloadPercent = ref(0)
 const info = ref<UpdateInfo | null>(null)
 const error = ref('')
 
-const APP_VERSION = '1.1.0'
+const APP_VERSION = '1.1.1'
 const REPO = UPDATE_REPO
 
 /** 检查更新（手动触发） */

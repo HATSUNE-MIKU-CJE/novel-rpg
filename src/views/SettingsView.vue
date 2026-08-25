@@ -6,6 +6,7 @@ import { useChatStore } from '../stores/chat'
 import { BUILTIN_NODES } from '../engine/builtinNodes'
 import { DEEPSEEK_PRICES, isPeakHour, PRICE_SOURCE_DATE } from '../engine/pricing'
 import { checkForUpdate, UPDATE_REPO } from '../engine/updater'
+import { exportFile } from '../engine/exportFile'
 import PresetPanel from './PresetPanel.vue'
 import UpdaterCard from './UpdaterCard.vue'
 import type { ApiConfig } from '../types'
@@ -22,7 +23,7 @@ const subTab = ref<'api' | 'preset' | 'stats'>('api')
 onMountedCheck()
 async function onMountedCheck() {
   try {
-    await checkForUpdate(UPDATE_REPO, '1.1.0')
+    await checkForUpdate(UPDATE_REPO, '1.1.1')
   } catch { /* 静默失败，用户可在设置页手动检查 */ }
 }
 
@@ -107,12 +108,8 @@ async function exportBackup() {
     characters: await db.characters.toArray(),
     relations: await db.relations.toArray(),
   }
-  const blob = new Blob([JSON.stringify(dump, null, 2)], { type: 'application/json' })
-  const a = document.createElement('a')
-  a.href = URL.createObjectURL(blob)
-  a.download = `novel-rpg-backup-${Date.now()}.json`
-  a.click()
-  URL.revokeObjectURL(a.href)
+  const content = JSON.stringify(dump, null, 2)
+  await exportFile(`novel-rpg-backup-${Date.now()}.json`, content)
   showToast('已导出备份 JSON')
 }
 

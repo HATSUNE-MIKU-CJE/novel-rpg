@@ -22,11 +22,12 @@ export async function exportFile(fileName: string, content: string, mime = 'appl
   }
 
   // 原生：写 Cache + 分享
+  // Encoding.UTF8 = data 作为 UTF-8 字符串原样写入（内容就是原始文本）。
+  // 之前错误做法：先 btoa 成 base64 再用 UTF8 模式写 → 文件里存的是 base64 文本 → 乱码。
   try {
-    const base64 = btoa(unescape(encodeURIComponent(content)))
     const res = await Filesystem.writeFile({
       path: fileName,
-      data: base64,
+      data: content,
       directory: Directory.Cache,
       encoding: Encoding.UTF8,
     })
