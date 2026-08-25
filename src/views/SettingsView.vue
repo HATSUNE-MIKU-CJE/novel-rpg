@@ -22,7 +22,7 @@ const subTab = ref<'api' | 'preset' | 'stats'>('api')
 onMountedCheck()
 async function onMountedCheck() {
   try {
-    await checkForUpdate(UPDATE_REPO, '1.0.1')
+    await checkForUpdate(UPDATE_REPO, '1.1.0')
   } catch { /* 静默失败，用户可在设置页手动检查 */ }
 }
 

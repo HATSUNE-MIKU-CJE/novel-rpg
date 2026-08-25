@@ -96,6 +96,8 @@ export interface Message {
   parsedJson?: string
   /** usage：{prompt_tokens, completion_tokens, total_tokens, costYuan?} */
   usageJson?: string
+  /** 思维链（reasoning_content），可折叠展开 */
+  reasoning?: string
   seq: number
   createdAt: number
 }

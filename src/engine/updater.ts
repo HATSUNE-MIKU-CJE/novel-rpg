@@ -1,16 +1,16 @@
 /**
- * 更新检查引擎：GitHub Releases 作为更新源。
+ * 更新检查引擎：GitHub Releases 作为更新源（带多镜像容错 + 超时 + 友好错误）。
  *
  * 检查：GET https://api.github.com/repos/{owner}/{repo}/releases/latest
  * 比对：semver 数字比较 + 本地版本（package version）
- * 下载：浏览器/应用内 fetch → Blob → Filesystem（Cache 目录）
+ * 下载：CapacitorHttp/CORS 直连 → Blob → Filesystem（Cache 目录）
  */
 
 import { Capacitor } from '@capacitor/core'
 import { Filesystem, Directory, Encoding } from '@capacitor/filesystem'
 import { httpFetch } from './http'
 
-/** GitHub 仓库（更新源）—— 从 package.json 的 repository 或常量读取 */
+/** GitHub 仓库（更新源） */
 export const UPDATE_REPO = 'HATSUNE-MIKU-CJE/novel-rpg'
 
 export interface UpdateInfo {
@@ -46,50 +46,73 @@ export function compareVersions(a: string, b: string): number {
   return 0
 }
 
+/** 可用的检查源（按顺序尝试） */
+function checkSources(repo: string): string[] {
+  return [
+    `https://api.github.com/repos/${repo}/releases/latest`,
+    `https://ghproxy.com/https://api.github.com/repos/${repo}/releases/latest`,
+    `https://gh-proxy.com/https://api.github.com/repos/${repo}/releases/latest`,
+  ]
+}
+
+/** 带超时的 httpFetch */
+async function fetchWithTimeout(url: string, headers: Record<string, string>, timeoutMs = 12000): Promise<Response> {
+  const ctrl = new AbortController()
+  const timer = setTimeout(() => ctrl.abort(), timeoutMs)
+  try {
+    return await httpFetch(url, { headers, signal: ctrl.signal })
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
 /**
- * 检查最新版本。
- * @param repo 如 'HATSUNE-MIKU-CJE/novel-rpg'
- * @param currentVersion 当前版本（如 '1.0.1'）
+ * 检查最新版本（多源容错）。
+ * 主源失败时依次尝试镜像；全部失败抛友好错误。
  */
 export async function checkForUpdate(
   repo = UPDATE_REPO,
-  currentVersion = '1.0.1',
+  currentVersion = '1.1.0',
 ): Promise<UpdateInfo> {
   const m = repo.match(OWNER_REPO_RE)
   if (!m) throw new Error('仓库格式错误：应为 owner/repo')
 
-  const resp = await httpFetch(`https://api.github.com/repos/${repo}/releases/latest`, {
-    headers: { Accept: 'application/vnd.github+json' },
-  })
-  if (resp.status === 404) {
-    return { hasUpdate: false, latestVersion: currentVersion, currentVersion }
+  let lastErr = ''
+  for (const url of checkSources(repo)) {
+    try {
+      const resp = await fetchWithTimeout(url, { Accept: 'application/vnd.github+json' })
+      if (resp.status === 404) {
+        return { hasUpdate: false, latestVersion: currentVersion, currentVersion }
+      }
+      if (!resp.ok) {
+        lastErr = `HTTP ${resp.status}`
+        continue
+      }
+      const data = await resp.json()
+      const latestVersion = String(data.tag_name ?? '').replace(/^v/, '')
+      const assets: any[] = Array.isArray(data.assets) ? data.assets : []
+      const apkAsset = assets.find((a) => String(a.name ?? '').endsWith('.apk'))
+      return {
+        hasUpdate: compareVersions(latestVersion, currentVersion) > 0,
+        latestVersion,
+        currentVersion,
+        releaseName: data.name ?? '',
+        releaseNotes: String(data.body ?? '').slice(0, 2000),
+        apkUrl: apkAsset ? assetDownloadUrl(apkAsset) : undefined,
+        publishedAt: data.published_at ?? '',
+      }
+    } catch (e: any) {
+      lastErr = e?.name === 'AbortError' ? '超时' : (e?.message || String(e))
+      // 源不可用，尝试下一个
+    }
   }
-  if (!resp.ok) {
-    throw new Error(`检查更新失败：HTTP ${resp.status}`)
-  }
-  const data = await resp.json()
-
-  const latestVersion = String(data.tag_name ?? '').replace(/^v/, '')
-  // 找 APK 资产
-  const assets: any[] = Array.isArray(data.assets) ? data.assets : []
-  const apkAsset = assets.find((a) => String(a.name ?? '').endsWith('.apk'))
-
-  return {
-    hasUpdate: compareVersions(latestVersion, currentVersion) > 0,
-    latestVersion,
-    currentVersion,
-    releaseName: data.name ?? '',
-    releaseNotes: String(data.body ?? '').slice(0, 2000),
-    apkUrl: apkAsset ? assetDownloadUrl(apkAsset) : undefined,
-    publishedAt: data.published_at ?? '',
-  }
+  throw new Error(`无法连接更新源（${lastErr || '网络错误'}）\n请检查网络（GitHub 需可访问）或稍后重试`)
 }
 
 /** 应用内下载 APK → 本地 Cache 文件，返回本地 uri（原生拉起用） */
 export async function downloadApk(url: string, version: string): Promise<{ uri: string; name: string }> {
-  // 下载保持标准 fetch：GitHub 资产直链有 CORS 头，WebView 可过；
-  // CapacitorHttp 对二进制需要特殊 responseType，这里走浏览器通道更稳
-  const resp = await fetch(url)
+  // 下载保持标准 fetch：GitHub 资产直链浏览器可过；原生走 CapacitorHttp 大文件不稳
+  const resp = await fetchWithTimeout(url, {}, 300000)
   if (!resp.ok) throw new Error(`下载失败：HTTP ${resp.status}`)
   const blob = await resp.blob()
   const name = `novel-rpg-${version}.apk`

@@ -123,6 +123,20 @@ const searchResults = computed(() => {
   return chat.messages.filter((m) => m.content.includes(q)).slice(-30)
 })
 
+// ---- 思维链折叠状态（按消息 id 记录） ----
+const expandedReasoning = ref<Set<number>>(new Set())
+function toggleReasoning(id?: number) {
+  if (!id) return
+  const s = new Set(expandedReasoning.value)
+  if (s.has(id)) s.delete(id)
+  else s.add(id)
+  expandedReasoning.value = s
+}
+/** 剪掉正文里残留的 think 标签片段（模型有时把思考写进正文） */
+function stripThinkTag(text: string): string {
+  return text.replace(/⟦THINK⟧|<\/?think>|<\/?THINK>|<\|open\|>think<\|sep\|>/gi, '').trim()
+}
+
 async function jumpToMsg(id: number) {
   searchOpen.value = false
   // 简单滚动到目标：将消息列表 scroll 到消息附近（按 idx 估算）
@@ -210,7 +224,17 @@ async function jumpToMsg(id: number) {
 
           <!-- 消息体 -->
           <div v-if="m.role === 'user'" class="msg-card msg-user">{{ m.content }}</div>
-          <div v-else class="msg-card">{{ bodyOf(m) }}</div>
+          <template v-else>
+            <!-- 思维链（可折叠） -->
+            <div v-if="m.reasoning" class="reasoning-block">
+              <button class="reasoning-toggle" @click="toggleReasoning(m.id)">
+                <span class="reasoning-icon">{{ expandedReasoning.has(m.id!) ? '▼' : '▶' }}</span>
+                思维链（{{ fmtTokens(m.reasoning.length) }} 字符）
+              </button>
+              <div v-if="expandedReasoning.has(m.id!)" class="reasoning-body">{{ m.reasoning }}</div>
+            </div>
+            <div class="msg-card">{{ bodyOf(m) }}</div>
+          </template>
 
           <!-- token 统计 -->
           <div v-if="m.role === 'assistant' && usageOf(m)" class="msg-usage">

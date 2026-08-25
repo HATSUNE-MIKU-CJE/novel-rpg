@@ -173,6 +173,33 @@ textarea { resize: vertical; min-height: 60px; }
 .msg-usage-del { margin-left: auto; cursor: pointer; opacity: .75; }
 .msg-usage-del:hover { opacity: 1; }
 
+/* 思维链折叠块 */
+.reasoning-block {
+  margin: 6px 0 2px;
+  border: 1px dashed var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--card-soft);
+  overflow: hidden;
+}
+.reasoning-toggle {
+  display: flex; align-items: center; gap: 6px;
+  width: 100%; text-align: left;
+  padding: 8px 12px;
+  font-size: 12.5px; color: var(--ink-soft);
+  font-weight: 500;
+}
+.reasoning-icon { font-size: 9px; width: 12px; }
+.reasoning-body {
+  padding: 6px 12px 10px;
+  font-size: 12.5px;
+  color: var(--ink-soft);
+  white-space: pre-wrap;
+  border-top: 1px dashed var(--line);
+  max-height: 260px;
+  overflow-y: auto;
+  line-height: 1.6;
+}
+
 .msg-scene {
   background: var(--accent-soft);
   border-radius: var(--radius);

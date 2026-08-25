@@ -116,14 +116,22 @@ export const useChatStore = defineStore('chat', {
       const ds = useDataStore()
       const campaign = this.currentCampaign!
       const cfg = this.dreamConfig()
+      const mode = (cfg?.output_mode as string | undefined) ?? 'writing'
+      // 聊天模式：一律不挂预设（预设只服务于写作跑团）
+      if (mode === 'chat') {
+        return [{
+          name: 'chat-light', role: 'system', enabled: true,
+          content: '你现在是“梦鲸思客”的闲聊人格：暂停梦境写作，以自然的语气和用户聊天。你可以开轻松玩笑、回应情绪，保持友好；不要输出 XML、不要扮演梦里的角色，就当一个会聊天的朋友。',
+        }]
+      }
       if (cfg) {
-        // 自动渠道：需要模型名判断思考标记
+        // 内置预设：写作/总结/创作走完整链
         const api = ds.getDefaultApi()
         return buildDreamPromptBlocks(cfg, api?.model ?? '')
       }
       if (campaign.presetId) {
         const preset = ds.presets.find((p) => p.id === campaign.presetId)
-        if (preset) return JSON.parse(preset.promptsJson)
+        if (preset) return JSON.parse(preset.promptsJson) as Array<{ name: string; role: string; content: string; enabled: boolean }>
       }
       return [{ name: 'default', role: 'system', content: '你是小说叙事 AI，请用中文推进故事。', enabled: true }]
     },
@@ -232,6 +240,7 @@ export const useChatStore = defineStore('chat', {
           role: 'assistant',
           content: reply.content,
           parsedJson: JSON.stringify(parsed),
+          reasoning: reply.reasoning?.trim() ? reply.reasoning.trim() : undefined,
           usageJson: usage ? JSON.stringify({
             promptTokens: usage.promptTokens,
             completionTokens: usage.completionTokens,
@@ -456,7 +465,7 @@ export const useChatStore = defineStore('chat', {
   },
 })
 
-interface FullReply { content: string; usage: any }
+interface FullReply { content: string; usage: any; reasoning?: string }
 
 /** chatCompletion + usage 返回 */
 async function chatCompletionFull(api: ApiConfig, messages: ChatUserMessage[]): Promise<FullReply> {
@@ -492,9 +501,10 @@ async function chatCompletionFull(api: ApiConfig, messages: ChatUserMessage[]): 
   }
 
   const data = await resp.json()
-  const content = data?.choices?.[0]?.message?.content
+  const msg = data?.choices?.[0]?.message
+  const content = msg?.content
   if (typeof content !== 'string') {
     throw new Error('响应格式异常：缺少 choices[0].message.content')
   }
-  return { content, usage: parseUsage(data) }
+  return { content, usage: parseUsage(data), reasoning: msg?.reasoning_content ?? '' }
 }

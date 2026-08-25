@@ -4,6 +4,7 @@ import { db } from '../db'
 import { useDataStore } from '../stores/data'
 import { useChatStore } from '../stores/chat'
 import { formatSpecMarkdown, formatSpecSchema } from '../engine/specExport'
+import { exportFile } from '../engine/exportFile'
 import RelationGraph from './RelationGraph.vue'
 import type { Character, Relation, Worldbook, Entry } from '../types'
 
@@ -15,6 +16,18 @@ const characters = ref<Character[]>([])
 const relations = ref<Relation[]>([])
 const showImportModal = ref(false)
 const importText = ref('')
+const importFileName = ref('')
+const importFileInput = ref<HTMLInputElement>()
+
+/** 选文件自动读入并填充 */
+function onImportFile(ev: Event) {
+  const f = (ev.target as HTMLInputElement).files?.[0]
+  if (!f) return
+  importFileName.value = f.name
+  const reader = new FileReader()
+  reader.onload = () => { importText.value = String(reader.result ?? '') }
+  reader.readAsText(f)
+}
 const showBindPicker = ref(false)
 const pendingBindWb = ref<Worldbook | null>(null)
 
@@ -156,13 +169,12 @@ async function doImportWb() {
   }
 }
 
-function download(name: string, content: string, mime = 'application/json') {
-  const blob = new Blob([content], { type: mime })
-  const a = document.createElement('a')
-  a.href = URL.createObjectURL(blob)
-  a.download = name
-  a.click()
-  URL.revokeObjectURL(a.href)
+async function download(name: string, content: string, mime = 'application/json') {
+  try {
+    await exportFile(name, content, mime)
+  } catch (e: any) {
+    alert('导出失败：' + (e?.message || '未知错误'))
+  }
 }
 
 /** 导出某本世界书为规范 JSON */
@@ -173,7 +185,7 @@ async function exportWb(wb: Worldbook) {
     worldbook: { name: wb.name, description: wb.description ?? '' },
     entries: entries.map((e) => ({ key: e.key ? e.key.split(/[,，]/).map((s) => s.trim()).filter(Boolean) : undefined, content: e.content, enabled: !!e.enabled })),
   }
-  download(`worldbook-${wb.name}.json`, JSON.stringify(dump, null, 2))
+  await download(`worldbook-${wb.name}.json`, JSON.stringify(dump, null, 2))
 }
 
 // ---- 会话变量查看器 ----
@@ -413,9 +425,15 @@ function openEdit(e: Entry) {
           角色与关系会写入当前存档（{{ chat.currentCampaign?.name || '未打开存档则仅入库' }}）。
         </div>
         <div class="field">
+          <label style="margin-bottom:8px">方式一：选择文件（自动识别填入）</label>
+          <input ref="importFileInput" type="file" accept=".json,application/json" @change="onImportFile" />
+          <div v-if="importFileName" class="list-sub" style="margin-top:4px">已读取：{{ importFileName }}（{{ importText.length }} 字符）</div>
+        </div>
+        <div class="field">
+          <label>方式二：粘贴 JSON 文本</label>
           <textarea v-model="importText" rows="8" placeholder='{"version":1,"worldbook":{"name":"..."},...}'></textarea>
         </div>
-        <button class="btn btn-primary btn-block" @click="doImportWb">导入</button>
+        <button class="btn btn-primary btn-block" :disabled="!importText.trim()" @click="doImportWb">导入</button>
       </div>
     </div>
 
