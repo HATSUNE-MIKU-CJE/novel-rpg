@@ -41,6 +41,8 @@ const mock = createServer((req: IncomingMessage, res: ServerResponse) => {
       content = '{"title":"铁炉堡清晨之约","events":[{"time":"清晨","place":"东门","desc":"敲开东门遇见艾莉丝。"},{"time":"上午","place":"城门口","desc":"狼群在远处嚎叫，铁锤队长出现。"}]}'
     } else if (sysText.includes('属性体系设计师')) {
       content = '{"dims":[{"label":"体魄"},{"label":"灵根"},{"label":"悟性"},{"label":"心境"},{"label":"神识"},{"label":"气运"}],"realmLabel":"境界"}'
+    } else if (sysText.includes('世界观梳理师')) {
+      content = '{"summary":"铁炉堡的清晨，狼群与王室旧书之谜交织成冒险的序章。","blocks":[{"category":"地理环境","content":"东境狼群出没，商队绕路而行。","related":["铁炉堡"]},{"category":"种族文化","content":"王族以锤与铁砧为徽记。","related":[]}]}'
     } else if (sysText.includes('游戏设计主持')) {
       // 交流栏：纯文本回应
       content = `好，${echoed.slice(0, 30)} —— 这个方向很有味道。我们先把世界观锚定：你想让铁炉堡处于什么时代？`
@@ -204,10 +206,18 @@ const beforeP = await pendingCount()
 await page.getByTitle('确认写入世界书').first().click()
 await page.waitForTimeout(400)
 check('确认后临时区减 1', (await pendingCount()) === beforeP - 1)
-check('确认后板块显影（地理环境）', await page.getByText('🌍 地理环境').count() > 0)
 await page.getByTitle('丢弃').first().click()
 await page.waitForTimeout(400)
 check('丢弃后临时区再减 1', (await pendingCount()) === beforeP - 2)
+
+// 世界观梳理（AI 归纳，不是条目抄录）
+console.log('【世界观梳理】')
+check('更新按钮存在', await page.getByRole('button', { name: /↻ 更新/ }).count() > 0)
+await page.getByRole('button', { name: /🪄 梳理/ }).click()
+await page.waitForTimeout(3000)
+check('梳理摘要出现', await page.getByText('铁炉堡的清晨').count() > 0)
+check('分类归纳出现', await page.getByText('东境狼群出没').count() > 0)
+check('相关条目链接', await page.getByText('铁炉堡：铁炉堡东境出现狼群').count() > 0)
 
 // 属性建议（AI 按交流内容）
 console.log('【属性建议】')
@@ -218,13 +228,20 @@ await page.getByRole('button', { name: '保存' }).click()
 await page.waitForTimeout(400)
 check('保存后显示新维度（体魄）', await page.getByText('体魄', { exact: true }).count() > 0)
 
-// ---- 9. 配置 tab：世界书管理 + 变量 ----
+// ---- 9. 配置 tab：世界书折叠管理 + 变量 ----
 console.log('【配置 tab】')
 await page.getByRole('button', { name: /⚙️ 配置/ }).click()
 await page.waitForTimeout(400)
 check('绑定管理出现', await page.getByText('🔗 本存档绑定的世界书').count() > 0)
-check('自动笔记簿在列表', await page.getByText('自动笔记簿', { exact: false }).count() > 0)
-check('变量查看器出现', await page.getByText('🧬 会话变量').count() > 0)
+// 世界书默认折叠 → 展开
+check('世界书默认收起', await page.getByText(/📚 世界书（.*本）/).count() > 0)
+await page.getByText(/📚 世界书（.*本）/).click()
+await page.waitForTimeout(300)
+check('展开后自动笔记簿在列表', await page.getByText('自动笔记簿', { exact: false }).count() > 0)
+// 变量默认折叠 → 展开
+await page.getByText(/🧬 会话变量（.*）/).click()
+await page.waitForTimeout(300)
+check('变量查看器展开', await page.getByText('这里显示的是存档的宏变量').count() > 0)
 
 // ---- 10. 关系图 ----
 console.log('【关系图】')

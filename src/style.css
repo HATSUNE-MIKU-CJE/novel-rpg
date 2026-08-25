@@ -365,15 +365,26 @@ html[data-theme='dark'] .chat-inputbar { background: rgba(22,21,28,.96); }
 .attr-edit-list { margin-top: 8px; }
 .rel-line { font-size: 13.5px; padding: 3px 0; }
 
-/* v1.3 全屏弹层（角色详情等） */
+/* v1.3 全屏弹层（角色详情等）；v1.4 顶部安全区留白（关闭键不贴状态栏） */
 .modal-full {
   position: fixed; inset: 0;
   background: var(--bg);
   z-index: 70;
   overflow-y: auto;
   -webkit-overflow-scrolling: touch;
-  padding: 16px 14px calc(30px + env(safe-area-inset-bottom, 0px));
+  padding: calc(18px + env(safe-area-inset-top, 0px)) 14px calc(30px + env(safe-area-inset-bottom, 0px));
 }
+
+/* v1.4 折叠区 */
+.collapse-head {
+  display: flex; align-items: center; justify-content: space-between;
+  cursor: pointer; user-select: none; color: var(--ink);
+}
+.collapse-arrow { font-size: 12px; color: var(--ink-soft); }
+
+/* v1.4 世界观总览 */
+.world-block { padding: 8px 0 2px; border-top: 1px dashed var(--line); margin-top: 8px; }
+.world-block:first-of-type { border-top: none; margin-top: 4px; }
 
 /* ---------- 设置 ---------- */
 .section-gap { height: 14px; }

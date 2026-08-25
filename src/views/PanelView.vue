@@ -85,22 +85,40 @@ function activeWorldEntries(): Entry[] {
   return out
 }
 
-/** 世界 tab：板块分组（按类别） */
-const worldGroups = computed(() => {
-  const groups: Array<{ category: string; entries: Entry[] }> = []
-  for (const cat of CATEGORIES) {
-    const entries = activeWorldEntries().filter((e) => (e.category || '其他') === cat)
-    if (entries.length) groups.push({ category: cat, entries })
-  }
-  // 不在候选类别的归「其他」
-  const odd = activeWorldEntries().filter((e) => !(CATEGORIES as readonly string[]).includes(e.category || ''))
-  if (odd.length) {
-    const g = groups.find((x) => x.category === '其他')
-    if (g) g.entries.push(...odd)
-    else groups.push({ category: '其他', entries: odd })
-  }
-  return groups
+/** 世界 tab：AI 梳理总览 */
+const overview = computed<import('../types').WorldOverview | null>(() => {
+  const j = chat.currentCampaign?.worldOverviewJson
+  if (!j) return null
+  try {
+    const o = JSON.parse(j)
+    return o?.summary ? o : null
+  } catch { return null }
 })
+/** 有新条目但还没重新梳理 */
+const staleOverview = computed(() => {
+  const c = chat.currentCampaign
+  if (!c) return false
+  const organ = c.lastOrganized ?? 0
+  return !!overview.value && organ > overview.value.at
+})
+/** 按触发词找相关条目 */
+function relatedEntriesOf(keys: string[]): Entry[] {
+  const list = activeWorldEntries()
+  const out: Entry[] = []
+  for (const k of keys) {
+    const hit = list.find((e) => (e.key || '').split(/[,，]/).some((s) => s.trim() === k.trim()))
+    if (hit && !out.includes(hit)) out.push(hit)
+  }
+  return out
+}
+async function refreshWorld() {
+  const r = await chat.syncFrom('game')
+  showToast(r.skipped ? '世界书已是最新' : `已更新：角色 ${r.chars} · 关系 ${r.rels} · 事实 ${r.facts}（待确认）`)
+}
+async function doOverview() {
+  const o = await chat.buildWorldOverview()
+  showToast(o ? '✨ 已梳理世界观总览' : (chat.error || '梳理失败'))
+}
 
 const pendingEntries = ref<Entry[]>([])
 async function refreshPending() {
@@ -175,6 +193,10 @@ async function suggestSchema() {
     showToast(chat.error || '生成失败')
   }
 }
+
+// ---- 配置 tab 折叠 ----
+const showWbSection = ref(false)
+const showVarsSection = ref(false)
 
 // ---- 世界书管理 ----
 const wbList = computed(() => ds.worldbooks)
@@ -441,20 +463,37 @@ function showToast(msg: string) {
         </div>
       </div>
 
-      <!-- 世界观板块 -->
-      <div v-if="!worldGroups.length && !pendingEntries.length" class="empty-hint">
-        世界的设定还未显影<br />AI 提取的世界观信息会在这里分区呈现
-      </div>
-      <div v-for="g in worldGroups" :key="g.category" class="card" style="margin-bottom:12px">
-        <b style="margin-bottom:6px; display:block">🌍 {{ g.category }}</b>
-        <div v-for="e in g.entries" :key="e.id" class="entry-item">
-          <span class="entry-tag" :class="e.key ? 'tag-trigger' : 'tag-constant'">
-            {{ e.key ? e.key.split(/[,，]/)[0].slice(0, 10) : '常驻' }}
-          </span>
-          <div style="flex:1; min-width:0">
-            <div class="list-sub" style="white-space:pre-wrap">{{ e.content }}</div>
+      <!-- 世界观总览（AI 梳理，非条目抄录） -->
+      <div class="card" style="margin-bottom:12px">
+        <div style="display:flex; align-items:center; margin-bottom:6px">
+          <b style="flex:1">🌍 世界观总览</b>
+          <button class="btn btn-warm btn-sm" style="margin-right:6px" :disabled="chat.organizing" @click="refreshWorld">
+            {{ chat.organizing ? '…' : '↻ 更新' }}
+          </button>
+          <button class="btn btn-soft btn-sm" :disabled="chat.organizing" @click="doOverview">
+            {{ overview ? '🪄 重新梳理' : '🪄 梳理' }}
+          </button>
+        </div>
+        <div v-if="staleOverview" class="list-sub" style="margin-bottom:6px; color:var(--warm)">
+          🧺 有新内容未梳理 —— 点「重新梳理」更新总览
+        </div>
+        <template v-if="overview">
+          <div class="detail-text">{{ overview.summary }}</div>
+          <div v-for="b in overview.blocks" :key="b.category" class="world-block">
+            <b>🌍 {{ b.category }}</b>
+            <div class="detail-text" style="margin:2px 0">{{ b.content }}</div>
+            <div v-if="relatedEntriesOf(b.related).length">
+              <div v-for="(e, i) in relatedEntriesOf(b.related)" :key="i" class="list-sub">
+                · {{ e.key || '常驻' }}：{{ e.content.slice(0, 50) }}{{ e.content.length > 50 ? '…' : '' }}
+              </div>
+            </div>
           </div>
-          <button class="btn btn-ghost btn-sm" @click="openEdit(e)">编</button>
+        </template>
+        <div v-else-if="activeWorldEntries().length" class="list-sub">
+          点「🪄 梳理」—— AI 会把世界书提炼成世界观介绍（不是抄条目）
+        </div>
+        <div v-else class="list-sub">
+          先把条目确认进世界书（见上方临时区），AI 就能为你梳理世界观
         </div>
       </div>
     </div>
@@ -478,73 +517,86 @@ function showToast(msg: string) {
       </div>
 
       <!-- 工具行：导出规范 / 导入 -->
-      <div style="display:flex; gap:8px; margin-bottom:12px">
-        <button class="btn btn-warm btn-sm" style="flex:1" @click="download('世界书格式规范.md', formatSpecMarkdown, 'text/markdown')">
-          📄 规范.md
-        </button>
-        <button class="btn btn-warm btn-sm" style="flex:1" @click="download('worldbook-schema.json', formatSpecSchema)">
-          📐 Schema.json
-        </button>
-        <button class="btn btn-soft btn-sm" style="flex:1" @click="showImportModal = true">📥 导入</button>
-      </div>
-
-      <!-- 世界书列表 -->
-      <div v-if="!wbList.length" class="empty-hint">还没有世界书</div>
-      <div v-for="wb in wbList" :key="wb.id" class="card" style="margin-bottom: 12px">
-        <div style="display:flex; align-items:center; margin-bottom: 8px">
-          <div style="flex:1">
-            <b>{{ wb.name }}</b>
-            <span class="list-sub"> · {{ wb.scope === 'global' ? '全局共享' : '存档专属' }}</span>
-            <span v-if="nb(wb)" class="entry-tag tag-warm" style="margin-left:6px">AI 自动</span>
-          </div>
-          <button class="btn btn-ghost btn-sm" @click="exportWb(wb)">导出</button>
-          <button class="btn btn-danger btn-sm" @click="ds.deleteWorldbook(wb.id!)">删</button>
+      <div class="card" style="margin-bottom:12px">
+        <div class="collapse-head" @click="showWbSection = !showWbSection">
+          <b>📚 世界书（{{ wbList.length }} 本）</b>
+          <span class="collapse-arrow">{{ showWbSection ? '▲ 收起' : '▼ 展开' }}</span>
         </div>
-        <div v-if="!entriesOfWb(wb.id!).length" class="list-sub">空</div>
-        <div v-for="e in entriesOfWb(wb.id!).filter(x => x.status !== 'rejected')" :key="e.id" class="entry-item">
-          <span class="entry-tag" :class="e.key ? 'tag-trigger' : 'tag-constant'">
-            {{ e.status === 'pending' ? '待审' : (e.key ? '触发' : '常驻') }}
-          </span>
-          <div style="flex:1; min-width:0">
-            <div class="list-title" style="font-size:13px">{{ e.key || '—' }}</div>
-            <div class="list-sub" style="white-space:pre-wrap; overflow:hidden; text-overflow:ellipsis; max-height:34px">
-              {{ e.content }}
+        <template v-if="showWbSection">
+          <div style="display:flex; gap:8px; margin:8px 0 12px">
+            <button class="btn btn-warm btn-sm" style="flex:1" @click="download('世界书格式规范.md', formatSpecMarkdown, 'text/markdown')">
+              📄 规范.md
+            </button>
+            <button class="btn btn-warm btn-sm" style="flex:1" @click="download('worldbook-schema.json', formatSpecSchema)">
+              📐 Schema.json
+            </button>
+            <button class="btn btn-soft btn-sm" style="flex:1" @click="showImportModal = true">📥 导入</button>
+          </div>
+
+          <!-- 世界书列表 -->
+          <div v-if="!wbList.length" class="empty-hint">还没有世界书</div>
+          <div v-for="wb in wbList" :key="wb.id" class="card" style="margin-bottom: 12px; box-shadow:none; border:1px solid var(--line)">
+            <div style="display:flex; align-items:center; margin-bottom: 8px">
+              <div style="flex:1">
+                <b>{{ wb.name }}</b>
+                <span class="list-sub"> · {{ wb.scope === 'global' ? '全局共享' : '存档专属' }}</span>
+                <span v-if="nb(wb)" class="entry-tag tag-warm" style="margin-left:6px">AI 自动</span>
+              </div>
+              <button class="btn btn-ghost btn-sm" @click="exportWb(wb)">导出</button>
+              <button class="btn btn-danger btn-sm" @click="ds.deleteWorldbook(wb.id!)">删</button>
             </div>
+            <div v-if="!entriesOfWb(wb.id!).length" class="list-sub">空</div>
+            <div v-for="e in entriesOfWb(wb.id!).filter(x => x.status !== 'rejected')" :key="e.id" class="entry-item">
+              <span class="entry-tag" :class="e.key ? 'tag-trigger' : 'tag-constant'">
+                {{ e.status === 'pending' ? '待审' : (e.key ? '触发' : '常驻') }}
+              </span>
+              <div style="flex:1; min-width:0">
+                <div class="list-title" style="font-size:13px">{{ e.key || '—' }}</div>
+                <div class="list-sub" style="white-space:pre-wrap; overflow:hidden; text-overflow:ellipsis; max-height:34px">
+                  {{ e.content }}
+                </div>
+              </div>
+              <button class="btn btn-ghost btn-sm" @click="openEdit(e)">编</button>
+            </div>
+            <button class="btn btn-soft btn-sm" style="margin-top: 8px"
+              @click="openEdit({ worldbookId: wb.id!, source: 'manual', enabled: 1, createdAt: 0, updatedAt: 0, key: '', content: '' } as Entry)"
+            >＋ 条目</button>
           </div>
-          <button class="btn btn-ghost btn-sm" @click="openEdit(e)">编</button>
-        </div>
-        <button class="btn btn-soft btn-sm" style="margin-top: 8px"
-          @click="openEdit({ worldbookId: wb.id!, source: 'manual', enabled: 1, createdAt: 0, updatedAt: 0, key: '', content: '' } as Entry)"
-        >＋ 条目</button>
+
+          <button class="btn btn-soft btn-block" @click="editWb = { name: '新世界书', scope: 'global', createdAt: 0, updatedAt: 0 }; showWbEditor = true">
+            ＋ 新建世界书
+          </button>
+        </template>
       </div>
 
-      <button class="btn btn-soft btn-block" @click="editWb = { name: '新世界书', scope: 'global', createdAt: 0, updatedAt: 0 }; showWbEditor = true">
-        ＋ 新建世界书
-      </button>
-
-      <!-- 变量查看器 -->
-      <div class="card" style="margin: 14px 0 0">
-        <b style="margin-bottom:8px; display:block">🧬 会话变量（预设引擎内部状态）</b>
-        <div class="list-sub" style="margin-bottom:8px">
-          这里显示的是存档的宏变量（sleep_var_* 等）。高级用户可查看/修正。
+      <!-- 变量查看器（折叠） -->
+      <div class="card">
+        <div class="collapse-head" @click="showVarsSection = !showVarsSection">
+          <b>🧬 会话变量（{{ varsEntries.length }}）</b>
+          <span class="collapse-arrow">{{ showVarsSection ? '▲ 收起' : '▼ 展开' }}</span>
         </div>
-        <div v-if="!varsEntries.length" class="empty-hint" style="padding:16px 0">
-          暂无变量（发过一轮对话后会出现）
-        </div>
-        <div v-for="[k, v] in varsEntries" :key="k" class="entry-item" style="padding:8px 2px">
-          <div style="flex:1; min-width:0">
-            <div class="list-title" style="font-size:12.5px; color: var(--accent-deep)">{{ k }}</div>
-            <div class="list-sub" style="white-space:pre-wrap; word-break:break-all">{{ v.slice(0, 120) }}{{ v.length > 120 ? '…' : '' }}</div>
+        <template v-if="showVarsSection">
+          <div class="list-sub" style="margin:8px 0">
+            这里显示的是存档的宏变量（sleep_var_* 等）。高级用户可查看/修正。
           </div>
-          <button class="btn btn-ghost btn-sm" @click="varEditKey = k; varEditVal = v">改</button>
-          <button class="btn btn-danger btn-sm" @click="deleteVar(k)">删</button>
-        </div>
-      </div>
-      <div class="card" v-if="varEditKey">
-        <b style="margin-bottom:8px; display:block">编辑变量</b>
-        <div class="field"><label>键</label><input v-model="varEditKey" /></div>
-        <div class="field"><label>值</label><textarea v-model="varEditVal" rows="3"></textarea></div>
-        <button class="btn btn-primary btn-block" @click="saveVar">保存</button>
+          <div v-if="!varsEntries.length" class="empty-hint" style="padding:16px 0">
+            暂无变量（发过一轮对话后会出现）
+          </div>
+          <div v-for="[k, v] in varsEntries" :key="k" class="entry-item" style="padding:8px 2px">
+            <div style="flex:1; min-width:0">
+              <div class="list-title" style="font-size:12.5px; color: var(--accent-deep)">{{ k }}</div>
+              <div class="list-sub" style="white-space:pre-wrap; word-break:break-all">{{ v.slice(0, 120) }}{{ v.length > 120 ? '…' : '' }}</div>
+            </div>
+            <button class="btn btn-ghost btn-sm" @click="varEditKey = k; varEditVal = v">改</button>
+            <button class="btn btn-danger btn-sm" @click="deleteVar(k)">删</button>
+          </div>
+          <div class="card" v-if="varEditKey" style="box-shadow:none; border:1px solid var(--line); margin-top:10px">
+            <b style="margin-bottom:8px; display:block">编辑变量</b>
+            <div class="field"><label>键</label><input v-model="varEditKey" /></div>
+            <div class="field"><label>值</label><textarea v-model="varEditVal" rows="3"></textarea></div>
+            <button class="btn btn-primary btn-block" @click="saveVar">保存</button>
+          </div>
+        </template>
       </div>
     </div>
 

@@ -78,9 +78,22 @@ export interface Campaign {
   lastStream?: StreamKind
   /** v1.3：存档级属性体系（AttrSchema JSON：dims + realmLabel） */
   attrSchemaJson?: string
+  /** v1.4：世界观总览（AI 梳理结果 WorldOverview JSON） */
+  worldOverviewJson?: string
   createdAt: number
   updatedAt: number
   lastActive: number
+}
+
+/** v1.4 世界观总览（AI 对世界书条目的归纳，非抄录） */
+export interface WorldOverview {
+  summary: string
+  blocks: Array<{
+    category: string
+    content: string
+    related: string[]   // 相关条目触发词（最多 5 个）
+  }>
+  at: number
 }
 
 // 存档 × 世界书 绑定（mode: ref|copy）

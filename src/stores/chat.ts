@@ -12,6 +12,7 @@ import {
   parseAttrSchema, attrSchemaJson, type AttrSchema,
 } from '../engine/extractor'
 import { httpFetch } from '../engine/http'
+import type { WorldOverview } from '../types'
 
 /** 剥离 Vue 响应式代理，得到 IndexedDB 可序列化的纯对象 */
 function plainMsg<T>(obj: T): T {
@@ -189,6 +190,54 @@ export const useChatStore = defineStore('chat', {
       if (!c) return
       c.attrSchemaJson = attrSchemaJson(s)
       await useDataStore().saveCampaign(c)
+    },
+
+    /** v1.4：AI 梳理世界观总览（对世界书条目归纳，不抄原文） */
+    async buildWorldOverview(): Promise<WorldOverview | null> {
+      const c = this.currentCampaign
+      if (!c?.id) return null
+      const ds = useDataStore()
+      const api = ds.getDefaultApi()
+      if (!api || !api.apiKey) { this.error = '梳理需要 API 配置'; return null }
+
+      const bindings = await db.campaignBindings.where('campaignId').equals(c.id).toArray()
+      const wbIds = bindings.map((b) => b.worldbookId)
+      if (c.notebookWorldbookId) wbIds.push(c.notebookWorldbookId)
+      const lines: string[] = []
+      for (const wid of wbIds) {
+        for (const e of ds.entriesOf(wid)) {
+          if (!e.enabled || !e.content.trim()) continue
+          if (e.source === 'ai' && e.status !== 'accepted') continue
+          lines.push(`【${e.category || '其他'}】${e.key || '常驻'}：${e.content}`)
+        }
+      }
+      if (!lines.length) { this.error = '还没有已确认的世界观内容'; return null }
+
+      this.organizing = true
+      try {
+        const reply = await chatCompletion(api, [
+          {
+            role: 'system',
+            content: '你是世界观梳理师。把玩家梦境世界的设定条目整理成一份「世界观总览」。输出严格 JSON（无其他文字、无代码块）：{"summary":"一段话总览（2-3句，概括这个世界的核心面貌）","blocks":[{"category":"类别","content":"本类别的归纳描述（2-3句，像设定介绍，提炼而非抄录）","related":["相关条目触发词，最多5个"]}]}。blocks 覆盖全部类别且不重复。',
+          },
+          { role: 'user', content: `以下是世界书条目（【类别】触发词：内容）：\n\n${lines.join('\n').slice(0, 20000)}` },
+        ])
+        const parsed = extractJson<Omit<WorldOverview, 'at'>>(reply)
+        if (!parsed?.summary || !Array.isArray(parsed.blocks)) return null
+        const overview: WorldOverview = {
+          summary: parsed.summary,
+          blocks: parsed.blocks.filter((b) => b?.category?.trim() && b?.content?.trim()).slice(0, 12),
+          at: Date.now(),
+        }
+        c.worldOverviewJson = JSON.stringify(overview)
+        await ds.saveCampaign(c)
+        return overview
+      } catch (e: any) {
+        this.error = `梳理失败：${e?.message || e}`
+        return null
+      } finally {
+        this.organizing = false
+      }
     },
 
     /**
