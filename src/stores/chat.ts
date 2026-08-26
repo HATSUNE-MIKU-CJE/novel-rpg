@@ -347,8 +347,8 @@ export const useChatStore = defineStore('chat', {
         seq: maxSeq + 1,
         createdAt: Date.now(),
       }
-      await db.messages.add(plainMsg(userMsg))
-      arr.push({ ...userMsg, id: (userMsg as any).id })
+      userMsg.id = await db.messages.add(plainMsg(userMsg))
+      arr.push({ ...userMsg })
 
       await this.requestAssistant(campaign, api)
     },
@@ -368,6 +368,39 @@ export const useChatStore = defineStore('chat', {
       const api = useDataStore().getDefaultApi()
       if (!api) { this.error = '请先配置 API'; return }
       await this.requestAssistant(campaign, api)
+    },
+
+    /** v1.7 长按指定消息重新生成：删除该条 assistant 及后续，重新请求 */
+    async regenerateAt(seq: number) {
+      const campaign = this.currentCampaign
+      if (!campaign || this.sending) return
+      const arr = this.currentStream === 'talk' ? this.talkMessages : this.gameMessages
+      const target = arr.find((m) => (m.seq ?? 0) === seq && m.role === 'assistant')
+      if (!target) return
+      const doomed = arr.filter((m) => (m.seq ?? 0) >= seq)
+      await db.messages.bulkDelete(doomed.map((m) => m.id!).filter(Boolean))
+      const kept = arr.filter((m) => (m.seq ?? 0) < seq)
+      if (this.currentStream === 'talk') this.talkMessages = kept
+      else this.gameMessages = kept
+      const api = useDataStore().getDefaultApi()
+      if (!api) { this.error = '请先配置 API'; return }
+      await this.requestAssistant(campaign, api)
+    },
+
+    /** v1.7 编辑消息内容（assistant 编辑后重新解析，丢弃旧思维链） */
+    async editMessage(id: number, text: string, isUser: boolean) {
+      const m = await db.messages.get(id)
+      if (!m) return
+      m.content = text
+      m.parsedJson = isUser ? undefined : JSON.stringify(parseDreamPlot(text))
+      m.reasoning = undefined
+      await db.messages.put(plainMsg(m))
+      const patch = (arr: Message[]) => {
+        const i = arr.findIndex((x) => x.id === id)
+        if (i >= 0) arr[i] = { ...arr[i], ...plainMsg(m) }
+      }
+      patch(this.talkMessages)
+      patch(this.gameMessages)
     },
 
     /** 共享助理请求逻辑（按流分派） */
@@ -508,8 +541,8 @@ export const useChatStore = defineStore('chat', {
           seq: maxSeq + 1,
           createdAt: Date.now(),
         }
-        await db.messages.add(plainMsg(asstMsg))
-        arr.push({ ...asstMsg, id: (asstMsg as any).id })
+        asstMsg.id = await db.messages.add(plainMsg(asstMsg))
+        arr.push({ ...asstMsg })
 
         // 统计累计
         if (usage) {
@@ -939,8 +972,8 @@ export const useChatStore = defineStore('chat', {
           seq: maxSeq + 1,
           createdAt: Date.now(),
         }
-        await db.messages.add(plainMsg(m))
-        this.gameMessages.push({ ...m, id: (m as any).id })
+        m.id = await db.messages.add(plainMsg(m))
+        this.gameMessages.push({ ...m })
       }
       await ds().saveCampaign(campaign)
       this.currentStream = 'game'

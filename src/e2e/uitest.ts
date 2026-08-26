@@ -141,11 +141,9 @@ check('操作标题显示', await page.getByText('世界书条目「铁炉堡货
 await page.getByRole('button', { name: /^确认$/ }).click()
 await page.waitForTimeout(600)
 check('确认后操作区消失', await page.getByText(/AI 操作（/).count() === 0)
-await page.getByRole('button', { name: /^配置$/ }).click()
+await page.getByRole('button', { name: /^世界$/ }).click()
 await page.waitForTimeout(300)
-await page.getByText(/世界书（.*本）/).click()
-await page.waitForTimeout(300)
-check('条目已写入世界书', await page.getByText('铁炉堡货币', { exact: false }).count() > 0)
+check('条目已写入世界书（类别卡显影）', await page.getByText('经济系统', { exact: true }).count() > 0)
 await page.locator('.tabbar').getByText('对话').click()
 await page.waitForTimeout(400)
 
@@ -174,6 +172,27 @@ check('AI 回复上屏（XML 解析成正文）', await page.getByText(/回应�
 check('token 统计显示', await page.getByText(/共 3\.7k token/).count() > 0)
 check('金额折算显示', await page.getByText(/¥0\./).count() > 0)
 
+// ---- 6.3 消息长按操作 ----
+console.log('【消息长按】')
+await page.locator('.msg-card').last().dispatchEvent('touchstart', {})
+await page.waitForTimeout(750)
+check('长按弹出操作条', await page.getByText('消息操作').count() > 0)
+// 编辑
+await page.getByRole('button', { name: /编辑/ }).click()
+await page.waitForTimeout(300)
+const editBox = page.locator('.modal-sheet textarea').first()
+await editBox.fill('（编辑后）回应：「我走到东门前，敲了三下。」')
+const editModal = page.locator('.modal-mask').filter({ hasText: '编辑消息' })
+await editModal.getByRole('button', { name: '保存' }).click()
+await page.waitForTimeout(400)
+check('编辑后内容上屏', await page.getByText(/编辑后）回应/).count() > 0)
+// 重新生成（长按该条）
+await page.locator('.msg-card').last().dispatchEvent('touchstart', {})
+await page.waitForTimeout(750)
+await page.getByRole('button', { name: /重新生成/ }).click()
+await page.waitForTimeout(2500)
+check('重新生成成功（新回复）', await page.getByText(/回应：/).count() > 0 && await page.getByText(/编辑后/).count() === 0)
+
 // ---- 6.5 章节总结 + 同步设定按钮 ----
 console.log('【章节总结】')
 await page.getByRole('button', { name: /^总结$/ }).click()
@@ -198,6 +217,8 @@ await page.locator('.list-row', { hasText: '铁炉堡篇' }).click()
 await page.waitForTimeout(400)
 
 console.log('【整理世界书】')
+await page.getByRole('button', { name: /^角色$/ }).click()
+await page.waitForTimeout(300)
 await page.getByRole('button', { name: /整理世界书/ }).click()
 await page.waitForTimeout(2000)
 check('角色卡出现（艾莉丝）', await page.getByText('艾莉丝', { exact: false }).count() > 0)
@@ -262,25 +283,36 @@ await page.getByRole('button', { name: '保存' }).click()
 await page.waitForTimeout(400)
 check('保存后显示新维度（体魄）', await page.getByText('体魄', { exact: true }).count() > 0)
 
-// ---- 9. 配置 tab：世界书折叠管理 + 变量 ----
+// ---- 9. 配置 tab：世界书卡 + 绑定 + 变量 ----
 console.log('【配置 tab】')
 await page.getByRole('button', { name: /^配置$/ }).click()
 await page.waitForTimeout(400)
-check('绑定管理出现', await page.getByText('本存档绑定的世界书').count() > 0)
-// 世界书默认折叠 → 展开
 check('世界书默认收起', await page.getByText(/世界书（.*本）/).count() > 0)
 await page.getByText(/世界书（.*本）/).click()
 await page.waitForTimeout(300)
-check('展开后自动笔记簿在列表', await page.getByText('自动笔记簿', { exact: false }).count() > 0)
-// 条目：删除按钮存在 + 停用/启用切换
-check('条目删除按钮存在', await page.getByRole('button', { name: '删' }).count() > 0)
-await page.getByRole('button', { name: '停用' }).first().click()
+check('书本卡出现', await page.locator('.wb-card').count() > 0)
+// 打开卡 → 详情页
+await page.locator('.wb-card', { hasText: '自动笔记簿' }).getByRole('button', { name: /打开/ }).click()
 await page.waitForTimeout(400)
-check('条目停用标记', await page.locator('.entry-tag', { hasText: '停用' }).count() > 0)
-await page.getByRole('button', { name: '启用' }).first().click()
+check('书详情条目全文', await page.getByText('铁炉堡东境出现狼群').count() > 0)
+check('详情内条目管理按钮', await page.getByRole('button', { name: /^删$/ }).count() > 0)
+check('详情内新增条目', await page.getByRole('button', { name: /＋ 条目/ }).count() > 0)
+// 绑定弹层（多存档勾选）
+await page.getByRole('button', { name: /绑定/ }).last().click()
 await page.waitForTimeout(400)
-check('条目恢复启用', await page.locator('.entry-tag', { hasText: '停用' }).count() === 0)
-// 变量默认折叠 → 展开
+check('绑定弹层出现', await page.getByText(/绑定存档/).count() > 0)
+const bindCk = page.locator('.modal-sheet input[type="checkbox"]').first()
+await bindCk.check()
+await page.waitForTimeout(300)
+check('勾选生效（checkbox checked）', await bindCk.isChecked())
+await bindCk.uncheck()
+await page.waitForTimeout(300)
+await page.getByRole('button', { name: '完成' }).click()
+await page.waitForTimeout(300)
+// 关闭详情
+await page.locator('.modal-full > div').first().locator('button').last().click()
+await page.waitForTimeout(300)
+// 变量折叠
 await page.getByText(/会话变量（.*）/).click()
 await page.waitForTimeout(300)
 check('变量查看器展开', await page.getByText('这里显示的是存档的宏变量').count() > 0)

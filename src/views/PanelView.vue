@@ -389,20 +389,39 @@ async function refreshBindings() {
 watch(() => chat.currentCampaignId, refreshBindings)
 onMounted(refreshBindings)
 
-async function toggleBind(wb: Worldbook) {
-  const cid = chat.currentCampaignId
-  if (!cid) return
-  const exist = bindings.value.includes(wb.id!)
-  if (exist) {
-    await db.campaignBindings.where('campaignId').equals(cid).and((b) => b.worldbookId === wb.id).delete()
-  } else {
-    await db.campaignBindings.add({ campaignId: cid, worldbookId: wb.id!, mode: 'ref', createdAt: Date.now() })
+// ---- v1.7：世界书卡详情 + 多存档绑定 ----
+const wbDetail = ref<Worldbook | null>(null)
+const bindPickerOpen = ref(false)
+const bindPickerWb = ref<Worldbook | null>(null)
+const bindChecks = ref<Record<number, boolean>>({})
+
+async function openBindPicker(wb: Worldbook) {
+  bindPickerWb.value = wb
+  const all = await db.campaignBindings.toArray()
+  const map: Record<number, boolean> = {}
+  for (const b of all) {
+    if (b.worldbookId === wb.id!) map[b.campaignId] = true
   }
+  bindChecks.value = map
+  bindPickerOpen.value = true
+}
+
+async function toggleBindCampaign(cid: number) {
+  const wb = bindPickerWb.value
+  if (!wb?.id) return
+  const exist = await db.campaignBindings.where('campaignId').equals(cid).and((b) => b.worldbookId === wb.id).first()
+  if (exist) {
+    await db.campaignBindings.delete(exist.id!)
+  } else {
+    await db.campaignBindings.add({ campaignId: cid, worldbookId: wb.id, mode: 'ref', createdAt: Date.now() })
+  }
+  bindChecks.value = { ...bindChecks.value, [cid]: !bindChecks.value[cid] }
   await refreshBindings()
 }
 
-const campaignLevelBindings = computed(() => wbList.value.filter((w) => bindings.value.includes(w.id!)))
-const globalAvailable = computed(() => wbList.value.filter((w) => w.scope === 'global' && !bindings.value.includes(w.id!)))
+function wbDetailEntries(wb: Worldbook): Entry[] {
+  return entriesOfWb(wb.id!).filter((x) => x.status !== 'rejected')
+}
 
 // ---- 导入 & 导出 ----
 async function doImportWb() {
@@ -724,23 +743,11 @@ function showToast(msg: string) {
 
     <!-- ===== 配置 ===== -->
     <div v-if="tab === 'config'">
-      <!-- 本存档绑定的世界书 -->
-      <div class="card" style="margin-bottom:12px">
-        <b style="margin-bottom:6px; display:block"><Icon name="link" :size="14" /> 本存档绑定的世界书（注入对话）</b>
-        <div v-if="!campaignLevelBindings.length" class="list-sub">未绑定——只有下面「全部确认」的笔记簿内容会进入上下文</div>
-        <div v-for="wb in campaignLevelBindings" :key="'b' + wb.id" class="entry-item">
-          <span class="entry-tag tag-constant">已绑</span>
-          <div style="flex:1; font-size:13px; font-weight:600">{{ wb.name }}</div>
-          <button class="btn btn-ghost btn-sm" @click="toggleBind(wb)">解绑</button>
-        </div>
-        <div v-if="globalAvailable.length" class="list-sub" style="margin-top:6px">
-          全局库可绑定：<span v-for="w in globalAvailable" :key="'g' + w.id" style="display:inline-block; margin:4px 6px 0 0">
-            <button class="btn btn-soft btn-sm" @click="toggleBind(w)">＋ {{ w.name }}</button>
-          </span>
-        </div>
+      <div class="list-sub" style="margin-bottom:10px">
+        绑定说明：世界书被存档「绑定」后，其已确认条目会注入该存档的对话。
       </div>
 
-      <!-- 工具行：导出规范 / 导入 -->
+      <!-- 世界书（书本卡） -->
       <div class="card" style="margin-bottom:12px">
         <div class="collapse-head" @click="showWbSection = !showWbSection">
           <b><Icon name="library" :size="15" /> 世界书（{{ wbList.length }} 本）</b>
@@ -757,41 +764,31 @@ function showToast(msg: string) {
             <button class="btn btn-soft btn-sm" style="flex:1" @click="showImportModal = true"><Icon name="download" :size="13" /> 导入</button>
           </div>
 
-          <!-- 世界书列表 -->
+          <!-- 书本卡网格 -->
           <div v-if="!wbList.length" class="empty-hint">还没有世界书</div>
-          <div v-for="wb in wbList" :key="wb.id" class="card" style="margin-bottom: 12px; box-shadow:none; border:1px solid var(--line)">
-            <div style="display:flex; align-items:center; margin-bottom: 8px">
-              <div style="flex:1">
-                <b>{{ wb.name }}</b>
-                <span class="list-sub"> · {{ wb.scope === 'global' ? '全局共享' : '存档专属' }}</span>
-                <span v-if="nb(wb)" class="entry-tag tag-warm" style="margin-left:6px">AI 自动</span>
-              </div>
-              <button class="btn btn-ghost btn-sm" @click="exportWb(wb)">导出</button>
-              <button class="btn btn-danger btn-sm" @click="ds.deleteWorldbook(wb.id!)">删</button>
-            </div>
-            <div v-if="!entriesOfWb(wb.id!).length" class="list-sub">空</div>
-            <div v-for="e in entriesOfWb(wb.id!).filter(x => x.status !== 'rejected')" :key="e.id" class="entry-item">
-              <span class="entry-tag" :class="e.key ? 'tag-trigger' : 'tag-constant'" :style="!e.enabled ? 'opacity:.45' : ''">
-                {{ !e.enabled ? '停用' : (e.status === 'pending' ? '待审' : (e.key ? '触发' : '常驻')) }}
-              </span>
-              <div style="flex:1; min-width:0">
-                <div class="list-title" style="font-size:13px">{{ e.key || '—' }}</div>
-                <div class="list-sub" style="white-space:pre-wrap; overflow:hidden; text-overflow:ellipsis; max-height:34px">
-                  {{ e.content }}
+          <div v-else class="wb-card-grid">
+            <div v-for="wb in wbList" :key="wb.id" class="card wb-card" @click="wbDetail = wb">
+              <div style="display:flex; align-items:flex-start; gap:8px">
+                <span style="color:var(--accent-deep); display:flex; margin-top:2px"><Icon name="library" :size="18" /></span>
+                <div style="flex:1; min-width:0">
+                  <div class="wb-title" style="font-weight:700">{{ wb.name }}</div>
+                  <div class="list-sub" style="margin-top:2px">
+                    {{ entriesOfWb(wb.id!).filter(x => x.status !== 'rejected').length }} 条
+                    <span v-if="nb(wb)" class="entry-tag tag-warm" style="margin-left:6px">AI 自动</span>
+                  </div>
+                  <div class="list-sub" style="overflow:hidden; max-height:34px">{{ wb.description || '（无描述）' }}</div>
                 </div>
               </div>
-              <button class="btn btn-ghost btn-sm" :title="e.enabled ? '停用（不再注入）' : '重新启用'" @click="toggleEntryEnabled(e)">
-                {{ e.enabled ? '停用' : '启用' }}
-              </button>
-              <button class="btn btn-ghost btn-sm" @click="openEdit(e)">编</button>
-              <button class="btn btn-danger btn-sm" @click="removeEntry(e)">删</button>
+              <div style="display:flex; gap:6px; margin-top:6px">
+                <button class="btn btn-soft btn-sm" style="flex:1" @click.stop="wbDetail = wb">打开</button>
+                <button class="btn btn-ghost btn-sm" style="flex:1" @click.stop="openBindPicker(wb)">
+                  <Icon name="link" :size="12" /> 绑定
+                </button>
+              </div>
             </div>
-            <button class="btn btn-soft btn-sm" style="margin-top: 8px"
-              @click="openEdit({ worldbookId: wb.id!, source: 'manual', enabled: 1, createdAt: 0, updatedAt: 0, key: '', content: '' } as Entry)"
-            >＋ 条目</button>
           </div>
 
-          <button class="btn btn-soft btn-block" @click="editWb = { name: '新世界书', scope: 'global', createdAt: 0, updatedAt: 0 }; showWbEditor = true">
+          <button class="btn btn-soft btn-block" style="margin-top:10px" @click="editWb = { name: '新世界书', scope: 'campaign', createdAt: 0, updatedAt: 0 }; showWbEditor = true">
             ＋ 新建世界书
           </button>
         </template>
@@ -913,6 +910,59 @@ function showToast(msg: string) {
       </div>
     </div>
 
+    <!-- 世界书详情（全屏） -->
+    <div v-if="wbDetail" class="modal-full">
+      <div style="display:flex; align-items:center; gap:8px; max-width:640px; margin:0 auto">
+        <span style="color:var(--accent-deep); display:flex"><Icon name="library" :size="18" /></span>
+        <div style="flex:1; min-width:0">
+          <div style="font-size:18px; font-weight:700">{{ wbDetail.name }}</div>
+          <div class="list-sub">{{ wbDetailEntries(wbDetail).length }} 条 · {{ wbDetail.description || '（无描述）' }}</div>
+        </div>
+        <button class="btn btn-warm btn-sm" @click="openBindPicker(wbDetail)"><Icon name="link" :size="12" /> 绑定</button>
+        <button class="btn btn-ghost btn-sm" @click="exportWb(wbDetail)">导出</button>
+        <button class="btn btn-danger btn-sm" @click="ds.deleteWorldbook(wbDetail.id!); wbDetail = null">删</button>
+        <button class="btn btn-ghost btn-sm" @click="wbDetail = null"><Icon name="xmark" :size="14" /></button>
+      </div>
+      <div class="card" style="max-width:640px; margin:12px auto 0">
+        <div v-if="!wbDetailEntries(wbDetail).length" class="empty-hint">这本世界书还是空的</div>
+        <div v-for="e in wbDetailEntries(wbDetail)" :key="e.id" class="entry-item">
+          <span class="entry-tag" :class="e.key ? 'tag-trigger' : 'tag-constant'" :style="!e.enabled ? 'opacity:.45' : ''">
+            {{ !e.enabled ? '停用' : (e.status === 'pending' ? '待审' : (e.key ? e.key.split(/[,，]/)[0].slice(0, 8) : '常驻')) }}
+          </span>
+          <div style="flex:1; min-width:0">
+            <div class="list-sub" style="white-space:pre-wrap; font-size:13px; color:var(--ink)">{{ e.content }}</div>
+          </div>
+          <button class="btn btn-ghost btn-sm" :title="e.enabled ? '停用' : '启用'" @click="toggleEntryEnabled(e)">{{ e.enabled ? '停' : '启' }}</button>
+          <button class="btn btn-ghost btn-sm" @click="openEdit(e)">编</button>
+          <button class="btn btn-danger btn-sm" @click="removeEntry(e)">删</button>
+        </div>
+        <button class="btn btn-soft btn-block" style="margin-top:10px"
+          @click="openEdit({ worldbookId: wbDetail.id!, source: 'manual', enabled: 1, createdAt: 0, updatedAt: 0, key: '', content: '' } as Entry)"
+        >＋ 条目</button>
+      </div>
+    </div>
+
+    <!-- 绑定存档弹层 -->
+    <div v-if="bindPickerOpen" class="modal-mask" @click.self="bindPickerOpen = false">
+      <div class="modal-sheet">
+        <div class="modal-title">绑定存档 —— {{ bindPickerWb?.name }}</div>
+        <div class="list-sub" style="margin-bottom:8px">
+          被勾选的存档，其对话会注入这本书的已确认条目。
+        </div>
+        <div v-if="!ds.campaigns.length" class="empty-hint">还没有存档</div>
+        <div v-for="c in ds.campaigns" :key="c.id" class="list-row">
+          <div class="list-title">{{ c.name }}</div>
+          <input
+            type="checkbox"
+            style="width:auto"
+            :checked="!!bindChecks[c.id!]"
+            @change="toggleBindCampaign(c.id!)"
+          />
+        </div>
+        <button class="btn btn-ghost btn-block" style="margin-top:12px" @click="bindPickerOpen = false">完成</button>
+      </div>
+    </div>
+
     <!-- 世界书编辑器 -->
     <div v-if="showWbEditor && editWb" class="modal-mask" @click.self="showWbEditor = false">
       <div class="modal-sheet">
@@ -924,13 +974,6 @@ function showToast(msg: string) {
         <div class="field">
           <label>描述</label>
           <textarea v-model="editWb.description" rows="2"></textarea>
-        </div>
-        <div class="field">
-          <label>范围</label>
-          <select v-model="editWb.scope">
-            <option value="global">全局共享（所有存档可用）</option>
-            <option value="campaign">存档专属（新建后绑定到当前存档）</option>
-          </select>
         </div>
         <button class="btn btn-primary btn-block" @click="saveWb">创建</button>
       </div>

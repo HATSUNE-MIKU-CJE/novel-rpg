@@ -72,6 +72,57 @@ const listPad = ref(24)
 function scrollBottom(smooth = true) {
   nextTick(() => listEl.value?.scrollTo({ top: listEl.value.scrollHeight, behavior: smooth ? 'smooth' : 'auto' }))
 }
+function scrollTop() {
+  nextTick(() => listEl.value?.scrollTo({ top: 0, behavior: 'smooth' }))
+}
+
+// ---- 消息长按操作（重新生成 / 编辑 / 复制） ----
+const longPress = ref<Message | null>(null)
+const editTarget = ref<Message | null>(null)
+const editMsgOpen = ref(false)
+const editMsgText = ref('')
+let lpTimer: number | undefined
+function msgTouchStart(m: Message) {
+  clearTimeout(lpTimer)
+  lpTimer = window.setTimeout(() => { longPress.value = m }, 550)
+}
+function msgTouchEnd() { clearTimeout(lpTimer) }
+async function regenerateHere() {
+  const m = longPress.value
+  longPress.value = null
+  if (!m) return
+  await chat.regenerateAt(m.seq)
+  scrollBottom()
+}
+function startEditMsg() {
+  editTarget.value = longPress.value
+  editMsgText.value = editTarget.value ? bodyOf(editTarget.value) : ''
+  longPress.value = null
+  editMsgOpen.value = true
+}
+async function saveEditMsg() {
+  const m = editTarget.value
+  if (!m) return
+  const text = editMsgText.value.trim()
+  if (text && text !== m.content) {
+    await chat.editMessage(m.id!, text, m.role === 'user')
+    showToast('已保存修改')
+  }
+  editMsgOpen.value = false
+  editTarget.value = null
+}
+async function copyMsg() {
+  const m = longPress.value
+  longPress.value = null
+  if (!m) return
+  const text = bodyOf(m)
+  try {
+    await navigator.clipboard.writeText(text)
+    showToast('已复制')
+  } catch {
+    showToast('复制失败')
+  }
+}
 
 /** 点击选项 → 作为用户消息发送 */
 async function pickOption(opt: string) {
@@ -324,7 +375,7 @@ async function saveCharDetail(updated: Character) {
             </div>
 
             <!-- 消息体 -->
-            <div v-if="m.role === 'user'" class="msg-card msg-user">{{ m.content }}</div>
+            <div v-if="m.role === 'user'" class="msg-card msg-user" @touchstart="msgTouchStart(m)" @touchend="msgTouchEnd" @touchmove="msgTouchEnd">{{ m.content }}</div>
             <template v-else>
               <!-- 思维链（可折叠） -->
               <div v-if="m.reasoning" class="reasoning-block">
@@ -334,7 +385,7 @@ async function saveCharDetail(updated: Character) {
                 </button>
                 <div v-if="expandedReasoning.has(m.id!)" class="reasoning-body">{{ m.reasoning }}</div>
               </div>
-              <div class="msg-card">{{ bodyOf(m) }}</div>
+              <div class="msg-card" @touchstart="msgTouchStart(m)" @touchend="msgTouchEnd" @touchmove="msgTouchEnd">{{ bodyOf(m) }}</div>
             </template>
 
             <!-- token 统计（游戏流） -->
@@ -367,6 +418,12 @@ async function saveCharDetail(updated: Character) {
           {{ chat.currentStream === 'talk' ? '思客正在思考…' : '思客正在编织梦境…' }}
         </div>
         <div v-if="chat.error" class="msg-error">⚠️ {{ chat.error }}</div>
+
+        <!-- 直达顶/底 -->
+        <div class="scroll-fabs">
+          <button class="fab" title="回到顶部" @click="scrollTop"><Icon name="chevronUp" :size="16" /></button>
+          <button class="fab" title="回到底部" @click="scrollBottom()"><Icon name="chevronDown" :size="16" /></button>
+        </div>
       </template>
     </div>
 
@@ -493,6 +550,35 @@ async function saveCharDetail(updated: Character) {
         <div v-else class="empty-hint">
           开局包生成失败：{{ chat.error || '未知错误' }}<br />
           <button class="btn btn-soft btn-sm" style="margin-top:10px" @click="beginStart">重试</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 消息长按操作 -->
+    <div v-if="longPress" class="modal-mask" @click.self="longPress = null">
+      <div class="modal-sheet">
+        <div class="modal-title">消息操作</div>
+        <div class="msg-preview">{{ bodyOf(longPress).slice(0, 90) }}{{ bodyOf(longPress).length > 90 ? '…' : '' }}</div>
+        <div style="display:flex; gap:8px; flex-wrap:wrap">
+          <button v-if="longPress.role === 'assistant'" class="btn btn-primary" style="flex:1" @click="regenerateHere">
+            <Icon name="refresh" :size="14" /> 重新生成
+          </button>
+          <button class="btn btn-soft" style="flex:1" @click="startEditMsg"><Icon name="pencil" :size="14" /> 编辑</button>
+          <button class="btn btn-ghost" style="flex:1" @click="copyMsg"><Icon name="doc" :size="14" /> 复制</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 消息编辑弹层 -->
+    <div v-if="editMsgOpen" class="modal-mask" @click.self="editMsgOpen = false">
+      <div class="modal-sheet">
+        <div class="modal-title">编辑消息</div>
+        <div class="field">
+          <textarea v-model="editMsgText" rows="7"></textarea>
+        </div>
+        <div style="display:flex; gap:10px">
+          <button class="btn btn-ghost" style="flex:1" @click="editMsgOpen = false">取消</button>
+          <button class="btn btn-primary" style="flex:2" @click="saveEditMsg">保存</button>
         </div>
       </div>
     </div>
