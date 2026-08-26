@@ -8,6 +8,7 @@ import { initKeyboardHeight } from './engine/keyboard'
 import ChatView from './views/ChatView.vue'
 import PanelView from './views/PanelView.vue'
 import SettingsView from './views/SettingsView.vue'
+import Icon from './components/Icon.vue'
 
 const ds = useDataStore()
 const chat = useChatStore()
@@ -75,13 +76,13 @@ onMounted(async () => {
     />
     <nav class="tabbar">
       <button class="tab" :class="{ active: tab === 'chat' }" @click="setTab('chat')">
-        <span class="ico">📖</span>对话
+        <span class="ico"><Icon name="chat" :size="20" /></span>对话
       </button>
       <button class="tab" :class="{ active: tab === 'panel' }" @click="setTab('panel')">
-        <span class="ico">🎭</span>面板
+        <span class="ico"><Icon name="panel" :size="20" /></span>面板
       </button>
       <button class="tab" :class="{ active: tab === 'settings' }" @click="setTab('settings')">
-        <span class="ico">⚙️</span>设置
+        <span class="ico"><Icon name="gear" :size="20" /></span>设置
       </button>
     </nav>
     <div v-if="toast" class="toast">{{ toast }}</div>

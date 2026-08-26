@@ -4,6 +4,7 @@ import { db } from '../db'
 import { useDataStore } from '../stores/data'
 import { useChatStore, type StartGamePack } from '../stores/chat'
 import CharacterDetail from './CharacterDetail.vue'
+import Icon from '../components/Icon.vue'
 import type { Message, Character, StreamKind } from '../types'
 import type { ParsedDream } from '../engine/dreamParser'
 
@@ -83,6 +84,11 @@ async function send() {
   if (!text || chat.sending) return
   draft.value = ''
   await chat.sendUserMessage(text)
+  // AI 操作提示（交流栏：AI 提交了操作块 → 去临时区确认）
+  if (chat.lastOpCount > 0) {
+    showToast(`AI 提交了 ${chat.lastOpCount} 项操作，去 面板→世界 确认`)
+    chat.lastOpCount = 0
+  }
   scrollBottom()
 }
 
@@ -184,7 +190,7 @@ async function confirmStart(withOpening: boolean) {
   await chat.commitStartGame(pack.opening, withOpening)
   startFlow.value = false
   startPack.value = null
-  showToast(withOpening ? '梦境已开启 ✨' : '梦境已开启（未写开场）✨')
+  showToast(withOpening ? '梦境已开启' : '梦境已开启（未写开场）')
   scrollBottom(false)
 }
 
@@ -199,19 +205,19 @@ async function saveCharDetail(updated: Character) {
   <div class="chat-layout">
     <!-- 头部：存档切换 -->
     <header class="chat-header" @click="showCampaigns = true">
-      <div style="font-size:18px">📖</div>
+      <div style="color:var(--accent-deep); display:flex"><Icon name="book" :size="20" /></div>
       <div style="flex:1; min-width:0">
         <div class="campaign-name">{{ campaignName || '未选择存档' }}</div>
         <div class="hint">
-          {{ chat.currentStream === 'talk' ? '💬 交流 · 设计商谈' : '🎮 游戏 · 梦境推进' }} ·
+          {{ chat.currentStream === 'talk' ? '交流 · 设计商谈' : '游戏 · 梦境推进' }} ·
           {{ chat.messages.length }} 条 ·
           {{ fmtTokens(chat.totalTokens) }} token
           <template v-if="chat.totalCost"> · ¥{{ chat.totalCost.toFixed(3) }}</template>
         </div>
       </div>
-      <button class="btn btn-ghost btn-sm" @click.stop="toggleTheme">{{ isDark ? '☀️' : '🌙' }}</button>
-      <button class="btn btn-ghost btn-sm" @click.stop="searchOpen = !searchOpen">🔍</button>
-      <button class="btn btn-soft btn-sm" @click.stop="showNewCampaign = true">＋ 新档</button>
+      <button class="btn btn-ghost btn-sm" @click.stop="toggleTheme"><Icon :name="isDark ? 'sun' : 'moon'" :size="16" /></button>
+      <button class="btn btn-ghost btn-sm" @click.stop="searchOpen = !searchOpen"><Icon name="search" :size="16" /></button>
+      <button class="btn btn-soft btn-sm" @click.stop="showNewCampaign = true"><Icon name="plus" :size="14" /> 新档</button>
     </header>
 
     <!-- 搜索条 -->
@@ -237,26 +243,26 @@ async function saveCharDetail(updated: Character) {
           class="stream-tab"
           :class="{ active: chat.currentStream === 'talk' }"
           @click="switchStream('talk')"
-        >💬 交流<span class="stream-sub">设定商谈</span></button>
+        ><Icon name="chat" :size="17" /> 交流<span class="stream-sub">设定商谈</span></button>
         <button
           class="stream-tab"
           :class="{ active: chat.currentStream === 'game' }"
           @click="switchStream('game')"
-        >🎮 游戏<span class="stream-sub">梦境推进</span></button>
+        ><Icon name="gamepad" :size="17" /> 游戏<span class="stream-sub">梦境推进</span></button>
       </div>
       <div class="stream-actions">
         <template v-if="chat.currentStream === 'talk'">
           <button class="btn btn-warm btn-sm" :disabled="chat.organizing" @click="syncFromGame">
-            {{ chat.organizing ? '同步中…' : '↻ 更新' }}
+            <Icon name="refresh" :size="13" /> {{ chat.organizing ? '同步中…' : '更新' }}
           </button>
         </template>
         <template v-else>
           <button class="btn btn-ghost btn-sm" :disabled="chat.compacting" @click="chat.compactContext()">
-            {{ chat.compacting ? '压缩中…' : '🗜 压缩' }}
+            {{ chat.compacting ? '压缩中…' : '压缩' }}
           </button>
-          <button class="btn btn-ghost btn-sm" :disabled="chat.organizing" @click="doSummary">📜 总结</button>
+          <button class="btn btn-ghost btn-sm" :disabled="chat.organizing" @click="doSummary"><Icon name="scroll" :size="14" /> 总结</button>
           <button class="btn btn-warm btn-sm" :disabled="chat.organizing" @click="syncFromTalk">
-            {{ chat.organizing ? '同步中…' : '↻ 同步设定' }}
+            <Icon name="refresh" :size="13" /> {{ chat.organizing ? '同步中…' : '同步设定' }}
           </button>
         </template>
       </div>
@@ -266,27 +272,27 @@ async function saveCharDetail(updated: Character) {
     <div ref="listEl" class="chat-scroll" :style="{ paddingBottom: listPad + 'px' }" v-if="chat.currentCampaignId">
       <!-- 游戏栏 · 未开始：开始游戏入口 -->
       <div v-if="chat.currentStream === 'game' && !chat.inGame" class="start-gate card">
-        <div style="font-size:34px; text-align:center; margin-top:8px">🎮</div>
+        <div style="text-align:center; margin-top:8px; color:var(--accent)"><Icon name="gamepad" :size="40" /></div>
         <div class="start-gate-title">梦境尚未开启</div>
         <div class="list-sub" style="text-align:center; margin-top:6px">
-          先到 💬 交流栏和主持约好世界观、角色与基调<br />
+          先到「交流」栏和主持约好世界观、角色与基调<br />
           再回到这里开始你的梦境
         </div>
         <button class="btn btn-primary btn-block" style="margin-top:16px" :disabled="startLoading || chat.sending" @click="beginStart">
-          🚀 开始游戏{{ startLoading ? '…' : '' }}
+          <Icon name="rocket" :size="16" /> 开始游戏{{ startLoading ? '…' : '' }}
         </button>
       </div>
 
       <template v-else>
         <div v-if="chat.messages.length === 0" class="empty-hint">
           <template v-if="chat.currentStream === 'talk'">
-            和 AI 组队设计你的梦境游戏吧 🌙<br />
+            和 AI 组队设计你的梦境游戏吧<br />
             聊聊：想玩什么世界？扮演谁？什么基调？<br />
-            聊够了，点「🎮 游戏」开始梦境
+            聊够了，点「游戏」开始梦境
           </template>
           <template v-else>
             新的梦境还未开始<br />
-            写下你的第一句话吧 ✨
+            写下你的第一句话吧
           </template>
         </div>
 
@@ -294,17 +300,17 @@ async function saveCharDetail(updated: Character) {
           <div :data-msg="true">
             <!-- 前情摘要卡（游戏流） -->
             <div v-if="idx === 0 && chat.currentStream === 'game' && chat.currentCampaign?.summary" class="msg-scene" style="background: var(--warm-soft); color: var(--warm)">
-              📜 <b>前情摘要</b>：{{ chat.currentCampaign.summary.slice(0, 200) }}
+              <Icon name="scroll" :size="14" /> <b>前情摘要</b>：{{ chat.currentCampaign.summary.slice(0, 200) }}
             </div>
 
             <!-- 章节回顾卡（游戏流） -->
             <div v-if="m.role === 'assistant' && parseMsg(m)?.kind === 'summary'" class="summary-card">
-              <div class="summary-title">📜 {{ parseMsg(m)!.title }}</div>
+              <div class="summary-title"><Icon name="scroll" :size="15" /> {{ parseMsg(m)!.title }}</div>
               <div v-for="(ev, ei) in (parseMsg(m)!.events || [])" :key="ei" class="summary-row">
                 <span class="summary-dot">◆</span>
                 <div>
-                  <span v-if="ev.time" class="summary-meta">🕐 {{ ev.time }}</span>
-                  <span v-if="ev.place" class="summary-meta">📍 {{ ev.place }}</span>
+                  <span v-if="ev.time" class="summary-meta"><Icon name="clock" :size="12" /> {{ ev.time }}</span>
+                  <span v-if="ev.place" class="summary-meta"><Icon name="pin" :size="12" /> {{ ev.place }}</span>
                   <div class="summary-desc">{{ ev.desc }}</div>
                 </div>
               </div>
@@ -312,9 +318,9 @@ async function saveCharDetail(updated: Character) {
 
             <!-- 场景卡（游戏流） -->
             <div v-else-if="m.role === 'assistant' && chat.currentStream === 'game' && parseMsg(m)?.scene" class="msg-scene">
-              <span v-if="parseMsg(m)!.scene!.date"><b>🗓</b>{{ parseMsg(m)!.scene!.date }}</span>
-              <span v-if="parseMsg(m)!.scene!.time"><b>🕐</b>{{ parseMsg(m)!.scene!.time }}</span>
-              <span v-if="parseMsg(m)!.scene!.location"><b>📍</b>{{ parseMsg(m)!.scene!.location }}</span>
+              <span v-if="parseMsg(m)!.scene!.date"><b><Icon name="calendar" :size="13" /></b>{{ parseMsg(m)!.scene!.date }}</span>
+              <span v-if="parseMsg(m)!.scene!.time"><b><Icon name="clock" :size="13" /></b>{{ parseMsg(m)!.scene!.time }}</span>
+              <span v-if="parseMsg(m)!.scene!.location"><b><Icon name="pin" :size="13" /></b>{{ parseMsg(m)!.scene!.location }}</span>
             </div>
 
             <!-- 消息体 -->
@@ -323,7 +329,7 @@ async function saveCharDetail(updated: Character) {
               <!-- 思维链（可折叠） -->
               <div v-if="m.reasoning" class="reasoning-block">
                 <button class="reasoning-toggle" @click="toggleReasoning(m.id)">
-                  <span class="reasoning-icon">{{ expandedReasoning.has(m.id!) ? '▼' : '▶' }}</span>
+                  <span class="reasoning-icon">{{ expandedReasoning.has(m.id!) ? '▾' : '▸' }}</span>
                   思维链（{{ fmtTokens(m.reasoning.length) }} 字符）
                 </button>
                 <div v-if="expandedReasoning.has(m.id!)" class="reasoning-body">{{ m.reasoning }}</div>
@@ -336,7 +342,7 @@ async function saveCharDetail(updated: Character) {
               ↑ {{ fmtTokens(usageOf(m)!.promptTokens) }} ↓ {{ fmtTokens(usageOf(m)!.completionTokens) }}
               共 {{ fmtTokens(usageOf(m)!.totalTokens) }} token
               <template v-if="usageOf(m)!.costYuan"> · ¥{{ usageOf(m)!.costYuan!.toFixed(4) }}<span v-if="usageOf(m)!.peak" style="opacity:.7">（高峰）</span></template>
-              <span class="msg-usage-del" @click="chat.regenerate()">↻ 重发</span>
+              <span class="msg-usage-del" @click="chat.regenerate()"><Icon name="refresh" :size="12" /> 重发</span>
             </div>
 
             <!-- 后置格式（状态栏等，游戏流） -->
@@ -352,7 +358,7 @@ async function saveCharDetail(updated: Character) {
                 class="opt-btn"
                 :disabled="chat.sending"
                 @click="pickOption(opt)"
-              >✨ {{ opt }}</button>
+              ><Icon name="sparkle" :size="13" /> {{ opt }}</button>
             </div>
           </div>
         </template>
@@ -380,7 +386,7 @@ async function saveCharDetail(updated: Character) {
         rows="1"
         @keydown.enter.exact.prevent="send"
       ></textarea>
-      <button class="send-btn" :disabled="chat.sending || !draft.trim()" @click="send">➤</button>
+      <button class="send-btn" :disabled="chat.sending || !draft.trim()" @click="send"><Icon name="send" :size="17" /></button>
     </div>
 
     <!-- 存档选择弹层 -->
@@ -397,7 +403,7 @@ async function saveCharDetail(updated: Character) {
           <div>
             <div class="list-title">{{ c.name }}</div>
             <div class="list-sub">
-              {{ c.gameStarted ? '🎮 游戏中' : '💬 交流中' }}
+              {{ c.gameStarted ? '游戏中' : '交流中' }}
               · 自动整理 {{ c.autoInterval ? `每 ${c.autoInterval} 轮` : '关闭' }} ·
               {{ (c.statTokens ?? 0) >= 1000 ? ((c.statTokens ?? 0) / 1000).toFixed(1) + 'k' : (c.statTokens ?? 0) }} token
               <template v-if="c.statCostYuan"> · ¥{{ c.statCostYuan.toFixed(3) }}</template>
@@ -443,7 +449,7 @@ async function saveCharDetail(updated: Character) {
         </div>
         <button class="btn btn-primary btn-block" @click="createCampaign">创建</button>
         <div class="list-sub" style="margin-top:8px; text-align:center">
-          创建后先进入 💬 交流栏，和 AI 约定设定后再开始游戏
+          创建后先进入「交流」栏，和 AI 约定设定后再开始游戏
         </div>
       </div>
     </div>
@@ -465,7 +471,7 @@ async function saveCharDetail(updated: Character) {
           </div>
 
           <div v-if="startChars.length" class="field">
-            <label>👤 角色卡（点击可编辑属性）</label>
+            <label><Icon name="user" :size="13" /> 角色卡（点击可编辑属性）</label>
             <div class="char-card-grid">
               <div v-for="c in startChars" :key="c.id" class="char-card" @click="charDetail = c">
                 <div class="char-avatar">{{ c.name.slice(0, 1) }}</div>
@@ -476,11 +482,11 @@ async function saveCharDetail(updated: Character) {
           </div>
 
           <div class="field">
-            <label>✨ 开场白（可修改，选「先不写」则不生成）</label>
+            <label><Icon name="sparkle" :size="13" /> 开场白（可修改，选「先不写」则不生成）</label>
             <textarea v-model="startPack.opening" rows="5"></textarea>
           </div>
 
-          <button class="btn btn-primary btn-block" @click="confirmStart(true)">🚀 开始游戏（含开场白）</button>
+          <button class="btn btn-primary btn-block" @click="confirmStart(true)"><Icon name="rocket" :size="15" /> 开始游戏（含开场白）</button>
           <button class="btn btn-ghost btn-block" style="margin-top:8px" @click="confirmStart(false)">开始游戏（先不写开场）</button>
         </template>
 

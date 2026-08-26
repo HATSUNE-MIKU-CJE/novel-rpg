@@ -8,11 +8,12 @@ import { parseDreamPlot } from '../engine/dreamParser'
 import { buildDreamPromptBlocks, defaultDreamConfig, TALK_SYSTEM, type DreamConfig } from '../engine/dreamPreset'
 import { parseUsage, estimateCostYuan } from '../engine/pricing'
 import {
-  extractFacts, extractJson, mergeAttrs, applyRenames,
+  extractFacts, extractJson, mergeAttrs, applyRenames, normCategory,
   parseAttrSchema, attrSchemaJson, type AttrSchema,
 } from '../engine/extractor'
+import { parseOps, opGroup, type OpBlock } from '../engine/ops'
 import { httpFetch } from '../engine/http'
-import type { WorldOverview } from '../types'
+import type { WorldOverview, Entry as EntryType } from '../types'
 
 /** 剥离 Vue 响应式代理，得到 IndexedDB 可序列化的纯对象 */
 function plainMsg<T>(obj: T): T {
@@ -57,6 +58,8 @@ export const useChatStore = defineStore('chat', {
     sending: false,
     compacting: false,
     organizing: false,
+    /** 上一轮交流 AI 提交的操作数（UI 提示用） */
+    lastOpCount: 0,
     error: '' as string,
   }),
   getters: {
@@ -454,8 +457,8 @@ export const useChatStore = defineStore('chat', {
       }
     },
 
-    /** 请求 + 落库 + 统计（两流共用） */
-    async chatCompletionAndAppend(msgs: ChatUserMessage[], campaign: Campaign, api: ApiConfig, stream: StreamKind) {
+    /** 请求 + 落库 + 统计（两流共用）；talk 流解析 AI 操作块 → 写入操作审计 */
+    async chatCompletionAndAppend(msgs: ChatUserMessage[], campaign: Campaign, api: ApiConfig, stream: StreamKind): Promise<number> {
       this.sending = true
       try {
         const reply = await chatCompletionFull(api, msgs)
@@ -464,12 +467,32 @@ export const useChatStore = defineStore('chat', {
         const cost = usage && estimateCostYuan(api.model, usage, new Date())
         const costYuan = cost?.costYuan
 
+        // v1.5：交流流解析 AI 操作块 → 临时区审计
+        let content = reply.content
+        let opCount = 0
+        if (stream === 'talk') {
+          const r = parseOps(reply.content)
+          content = r.clean
+          if (r.ops.length) {
+            for (const o of r.ops) {
+              await db.ops.add(plainMsg({
+                campaignId: this.currentCampaignId,
+                kind: o.op,
+                payload: JSON.stringify(o),
+                status: 'pending',
+                createdAt: Date.now(),
+              }))
+            }
+            opCount = r.ops.length
+          }
+        }
+
         const arr = stream === 'talk' ? this.talkMessages : this.gameMessages
         const maxSeq = arr.length ? arr[arr.length - 1].seq : 0
         const asstMsg: Message = {
           campaignId: this.currentCampaignId,
           role: 'assistant',
-          content: reply.content,
+          content,
           stream,
           parsedJson: parsed ? JSON.stringify(parsed) : undefined,
           reasoning: reply.reasoning?.trim() ? reply.reasoning.trim() : undefined,
@@ -500,10 +523,167 @@ export const useChatStore = defineStore('chat', {
             this.compactContext(campaign)
           }
         }
+        this.lastOpCount = opCount
+        return opCount
       } catch (e: any) {
         this.error = e?.message || String(e)
+        return 0
       } finally {
         this.sending = false
+      }
+    },
+
+    // ---- v1.5 AI 操作审计：确认执行 / 退回 ----
+
+    /** 确认执行一条操作 */
+    async executeOp(id: number): Promise<boolean> {
+      const op = await db.ops.get(id)
+      if (!op || op.status !== 'pending') return false
+      const p = JSON.parse(op.payload) as OpBlock
+      const ok = await this.applyOp(p)
+      if (ok) {
+        op.status = 'done'
+        op.doneAt = Date.now()
+        await db.ops.put(plainMsg(op))
+        // 刷新条目/角色/关系缓存（配置 tab 与面板数据源）
+        await ds().loadAll()
+      }
+      return ok
+    },
+
+    /** 退回一条操作（不执行） */
+    async rejectOp(id: number) {
+      const op = await db.ops.get(id)
+      if (!op || op.status !== 'pending') return
+      op.status = 'rejected'
+      op.doneAt = Date.now()
+      await db.ops.put(plainMsg(op))
+    },
+
+    /** 全部确认（仅非删除类；删除类必须逐条） */
+    async acceptAllOps(): Promise<number> {
+      const pending = await db.ops.where('campaignId').equals(this.currentCampaignId).and((o) => o.status === 'pending').toArray()
+      let done = 0
+      for (const op of pending) {
+        const group = opGroup(op.kind)
+        if (group === 'del') continue
+        if (await this.executeOp(op.id!)) done++
+      }
+      return done
+    },
+
+    /** 执行操作主逻辑（确认时调用） */
+    async applyOp(p: OpBlock): Promise<boolean> {
+      const ds = useDataStore()
+      const c = this.currentCampaign
+      if (!c?.id) return false
+      try {
+        switch (p.op) {
+          case 'entry.upsert': {
+            const notebook = await this.ensureNotebook()
+            const exist = findNotebookEntry(ds, notebook.id!, normalizeKeys(p.key))
+            if (exist) {
+              exist.content = p.content ?? exist.content
+              if (p.category) exist.category = normCategory(p.category)
+              exist.updatedAt = Date.now()
+              await db.entries.put(plainMsg(exist))
+            } else {
+              await db.entries.add(plainMsg({
+                worldbookId: notebook.id!,
+                key: p.key ?? '',
+                content: p.content ?? '',
+                category: normCategory(p.category),
+                enabled: 1,
+                source: 'ai',
+                status: 'accepted',   // 已在临时区确认 → 直接生效
+                createdAt: Date.now(), updatedAt: Date.now(),
+              }))
+            }
+            return true
+          }
+          case 'entry.delete': {
+            const notebook = await this.ensureNotebook()
+            const exist = findNotebookEntry(ds, notebook.id!, normalizeKeys(p.key))
+            if (exist?.id) { await db.entries.delete(exist.id); return true }
+            return false
+          }
+          case 'entry.disable': {
+            const notebook = await this.ensureNotebook()
+            const exist = findNotebookEntry(ds, notebook.id!, normalizeKeys(p.key))
+            if (exist) { exist.enabled = 0; exist.updatedAt = Date.now(); await db.entries.put(plainMsg(exist)); return true }
+            return false
+          }
+          case 'char.upsert': {
+            const name = p.name?.trim()
+            if (!name) return false
+            const chars = await db.characters.where('campaignId').equals(c.id).toArray()
+            const exist = chars.find((x) => x.name === name)
+            const dimLabels = this.attrSchema().dims.map((d) => d.label)
+            const attrsJson = mergeAttrs(exist?.attributesJson, (p.attrs ?? []).filter((a) => dimLabels.includes(a.label)))
+            if (exist) {
+              if (p.identity) exist.identity = p.identity
+              if (p.realm) exist.realm = p.realm
+              if (p.description) exist.description = p.description
+              if (attrsJson !== undefined) exist.attributesJson = attrsJson
+              exist.updatedAt = Date.now()
+              await db.characters.put(plainMsg(exist))
+            } else {
+              await db.characters.add(plainMsg({
+                campaignId: c.id,
+                name,
+                identity: p.identity ?? '',
+                realm: p.realm,
+                description: p.description ?? '',
+                attributesJson: attrsJson,
+                source: 'ai', createdAt: Date.now(), updatedAt: Date.now(),
+              }))
+            }
+            return true
+          }
+          case 'char.rename': {
+            const chars = await db.characters.where('campaignId').equals(c.id).toArray()
+            const rels = await db.relations.where('campaignId').equals(c.id).toArray()
+            const rm = applyRenames(chars, rels, [{ from: p.from ?? '', to: p.to ?? '' }])
+            for (const ch of rm.changedChars) await db.characters.put(plainMsg(ch))
+            for (const r of rm.changedRels) await db.relations.put(plainMsg(r))
+            for (const d of rm.deletedChars) if (d.id) await db.characters.delete(d.id)
+            return rm.changedChars.length > 0 || rm.deletedChars.length > 0
+          }
+          case 'rel.upsert': {
+            if (!p.from?.trim() || !p.to?.trim() || !p.relType?.trim()) return false
+            const rels = await db.relations.where('campaignId').equals(c.id).toArray()
+            const exist = rels.find((r) => r.fromChar === p.from && r.toChar === p.to && r.relType === p.relType)
+            if (exist) {
+              if (p.label) exist.label = p.label
+              await db.relations.put(plainMsg(exist))
+            } else {
+              await db.relations.add(plainMsg({
+                campaignId: c.id,
+                fromChar: p.from, toChar: p.to, relType: p.relType, label: p.label ?? '',
+                createdAt: Date.now(),
+              }))
+            }
+            return true
+          }
+          case 'rel.delete': {
+            if (!p.from?.trim() || !p.to?.trim() || !p.relType?.trim()) return false
+            const rels = await db.relations.where('campaignId').equals(c.id).toArray()
+            const exist = rels.find((r) => r.fromChar === p.from && r.toChar === p.to && r.relType === p.relType)
+            if (exist?.id) { await db.relations.delete(exist.id); return true }
+            return false
+          }
+          case 'schema.propose': {
+            const dims = (p.dims ?? []).filter((d) => d?.label?.trim()).map((d) => ({ label: d.label.trim() }))
+            if (!dims.length) return false
+            await this.saveAttrSchema({ dims: dims.slice(0, 10), realmLabel: p.realmLabel ?? '' })
+            return true
+          }
+          default:
+            return false
+        }
+      } catch (e: any) {
+        this.error = `操作执行失败：${e?.message || e}`
+        return false
       }
     },
 
@@ -802,7 +982,7 @@ export const useChatStore = defineStore('chat', {
       const m: Message = {
         campaignId: this.currentCampaignId,
         role: 'assistant',
-        content: `📜 ${s.title}`,
+        content: `${s.title}`,
         stream: 'game',
         parsedJson: JSON.stringify({ kind: 'summary', title: s.title, events: s.events }),
         seq: maxSeq + 1,
@@ -838,6 +1018,23 @@ export const useChatStore = defineStore('chat', {
 /** Pinia store 外部取 ds（避免 action 内循环依赖） */
 function ds() {
   return useDataStore()
+}
+
+/** 触发词解析（逗号/中文逗号分隔） */
+function normalizeKeys(key?: string): string[] {
+  return (key ?? '').split(/[,，]/).map((k) => k.trim()).filter(Boolean)
+}
+
+/** 在笔记簿中按触发词匹配条目（相等/互相包含均命中） */
+function findNotebookEntry(ds: ReturnType<typeof useDataStore>, notebookId: number, keys: string[]): EntryType | undefined {
+  if (!keys.length) return undefined
+  const list = ds.entriesOf(notebookId)
+  return list.find((e) => {
+    if (e.status === 'rejected') return false
+    const eKeys = (e.key || '').split(/[,，]/).map((k) => k.trim()).filter(Boolean)
+    if (!eKeys.length && keys.length === 0) return true
+    return eKeys.some((k) => keys.includes(k) || keys.some((x) => x.includes(k) || k.includes(x)))
+  })
 }
 
 interface FullReply { content: string; usage: any; reasoning?: string }

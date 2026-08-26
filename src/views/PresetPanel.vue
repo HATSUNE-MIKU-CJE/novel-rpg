@@ -3,6 +3,7 @@ import { ref, computed } from 'vue'
 import { DREAM_GROUPS, customMapOf, type DreamConfig } from '../engine/dreamPreset'
 import { useDataStore } from '../stores/data'
 import { useChatStore } from '../stores/chat'
+import Icon from '../components/Icon.vue'
 
 const ds = useDataStore()
 const chat = useChatStore()
@@ -94,21 +95,21 @@ const advancedOptions = computed(() => {
 
 <template>
   <div v-if="currentCampaign" class="preset-panel">
-    <div class="page-title">🎛 梦鲸思客·精简 · 预设开关</div>
+    <div class="page-title" style="display:flex; align-items:center; gap:7px"><span style="color:var(--accent-deep); display:flex"><Icon name="sliders" :size="18" /></span>梦鲸思客·精简 · 预设开关</div>
     <div class="list-sub" style="margin: -6px 4px 12px">
       当前存档：{{ currentCampaign.name }} · 修改即时生效（下一轮对话使用）
     </div>
 
     <div class="card" style="margin-bottom: 12px; border: 1px dashed var(--accent)">
       <div class="list-sub" style="line-height: 1.6">
-        💬 v1.2：交流与游戏已分为<strong>双栏</strong>——本页所有开关只作用于 🎮 游戏栏的写作推进；
-        💬 交流栏独立使用「设计主持」人格（设置 → API 页面无关联）。
+        v1.2：交流与游戏已分为<strong>双栏</strong>——本页所有开关只作用于「游戏」栏的写作推进；
+        「交流」栏独立使用「设计主持」人格（设置 → API 页面无关联）。
       </div>
     </div>
 
     <!-- 高级区提示（自动渠道默认隐藏） -->
     <div v-if="showAdvanced" class="advanced-box card" style="margin-bottom: 12px">
-      <div style="margin-bottom: 8px"><b>⚙️ 高级选项（渠道手动档）</b></div>
+      <div style="margin-bottom: 8px"><b><Icon name="gear" :size="13" /> 高级选项（渠道手动档）</b></div>
       <div class="list-sub" style="margin-bottom: 10px">
         渠道适配默认「自动」按模型判断思考标记——只有手动档位在这，通常不用动。
       </div>

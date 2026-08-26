@@ -356,6 +356,7 @@ html[data-theme='dark'] .chat-inputbar { background: rgba(22,21,28,.96); }
 }
 .tag-constant { background: var(--accent-soft); color: var(--accent-deep); }
 .tag-trigger { background: var(--warm-soft); color: var(--warm); }
+.tag-danger { background: #f3e2e0; color: var(--danger); }
 
 /* 角色详情 */
 .char-detail { max-height: 88vh; }

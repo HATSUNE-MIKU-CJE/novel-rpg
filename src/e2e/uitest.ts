@@ -44,8 +44,12 @@ const mock = createServer((req: IncomingMessage, res: ServerResponse) => {
     } else if (sysText.includes('世界观梳理师')) {
       content = '{"summary":"铁炉堡的清晨，狼群与王室旧书之谜交织成冒险的序章。","blocks":[{"category":"地理环境","content":"东境狼群出没，商队绕路而行。","related":["铁炉堡"]},{"category":"种族文化","content":"王族以锤与铁砧为徽记。","related":[]}]}'
     } else if (sysText.includes('游戏设计主持')) {
-      // 交流栏：纯文本回应
-      content = `好，${echoed.slice(0, 30)} —— 这个方向很有味道。我们先把世界观锚定：你想让铁炉堡处于什么时代？`
+      // 交流栏：纯文本回应；含「记下来」→ 输出操作协议块
+      if (echoed.includes('记下来')) {
+        content = '已记下，去临时区确认。[[WB]]{"op":"entry.upsert","key":"铁炉堡货币","content":"以铜币为基本单位，汇率由王都铸造局控制。","category":"经济系统"}[[/WB]]'
+      } else {
+        content = `好，${echoed.slice(0, 30)} —— 这个方向很有味道。我们先把世界观锚定：你想让铁炉堡处于什么时代？`
+      }
     } else {
       content = `<dream_plot>\n<dream_body>回应：「${echoed.slice(0, 40)}」</dream_body>\n<dream_after_format>\n<dream_done/>\n</dream_after_format>\n</dream_plot>`
     }
@@ -95,39 +99,62 @@ check('Key 已填（本行待填标记消失）', !(await ocRow.innerText()).inc
 
 // ---- 3. 预设开关面板（无存档时应显示提示）----
 console.log('【预设开关】')
-await page.getByRole('button', { name: /🎛 预设/ }).click()
+await page.getByRole('button', { name: /^预设$/ }).click()
 await page.waitForTimeout(400)
 check('无存档提示', await page.getByText('先打开一个存档').count() > 0)
 check('输出模式组已隐藏', await page.getByText('输出模式', { exact: false }).count() === 0)
-await page.getByRole('button', { name: /🔌 API/ }).click()
+await page.getByRole('button', { name: /API/ }).click()
 
 // ---- 4. 新建存档 → 应进入交流栏 ----
 console.log('【存档+交流】')
 await page.locator('.tabbar').getByText('对话').click()
-await page.getByRole('button', { name: '＋ 新档' }).click()
+await page.getByRole('button', { name: /新档/ }).click()
 await page.waitForTimeout(300)
 await page.getByPlaceholder('如：我的梦境 · 夜航星海').fill('铁炉堡篇')
 await page.getByRole('button', { name: '创建' }).click()
 await page.waitForTimeout(600)
 check('存档已创建', await page.getByText('铁炉堡篇', { exact: true }).count() > 0)
-check('流切换条出现', await page.getByText('💬 交流', { exact: false }).count() > 0 && await page.getByText('🎮 游戏', { exact: false }).count() > 0)
+check('流切换条出现', await page.getByText('交流', { exact: false }).count() > 0 && await page.getByText('游戏', { exact: false }).count() > 0)
 check('默认在交流栏', await page.getByText(/和 AI 组队设计你的梦境游戏/).count() > 0)
 
 // 交流栏发消息（mock 主持人格返回纯文本）
 console.log('【交流对话】')
 await page.locator('.chat-inputbar textarea').fill('我想玩一个矮人铁炉堡的跑团')
-await page.getByRole('button', { name: '➤' }).click()
+await page.locator('.send-btn').click()
 await page.waitForTimeout(2500)
 check('交流用户消息上屏', await page.getByText('我想玩一个矮人铁炉堡的跑团').count() > 0)
 check('交流 AI 回复上屏', await page.getByText(/这个方向很有味道/).count() > 0)
 check('交流栏不渲染 XML（无 dream_body）', await page.getByText('dream_body').count() === 0)
 
+// ---- 4.5 AI 操作协议（交流栏主持写世界书）----
+console.log('【AI 操作协议】')
+await page.locator('.chat-inputbar textarea').fill('把铁炉堡的货币体系记下来')
+await page.locator('.send-btn').click()
+await page.waitForTimeout(2500)
+check('协议块从正文剥离', await page.getByText('已记下，去临时区确认。').count() > 0)
+await page.locator('.tabbar').getByText('面板').click()
+await page.waitForTimeout(500)
+await page.getByRole('button', { name: /^世界$/ }).click()
+await page.waitForTimeout(400)
+check('AI 操作区出现', await page.getByText(/AI 操作（1 项待确认）/).count() > 0)
+check('操作标题显示', await page.getByText('世界书条目「铁炉堡货币」').count() > 0)
+await page.getByRole('button', { name: /^确认$/ }).click()
+await page.waitForTimeout(600)
+check('确认后操作区消失', await page.getByText(/AI 操作（/).count() === 0)
+await page.getByRole('button', { name: /^配置$/ }).click()
+await page.waitForTimeout(300)
+await page.getByText(/世界书（.*本）/).click()
+await page.waitForTimeout(300)
+check('条目已写入世界书', await page.getByText('铁炉堡货币', { exact: false }).count() > 0)
+await page.locator('.tabbar').getByText('对话').click()
+await page.waitForTimeout(400)
+
 // ---- 5. 开始游戏向导 ----
 console.log('【开始游戏向导】')
-await page.getByRole('button', { name: /🎮 游戏/ }).click()
+await page.getByRole('button', { name: /梦境推进/ }).click()
 await page.waitForTimeout(400)
 check('游戏栏未开始显示入口', await page.getByText('梦境尚未开启').count() > 0)
-await page.getByRole('button', { name: /🚀 开始游戏/ }).click()
+await page.getByRole('button', { name: /开始游戏/ }).click()
 await page.waitForTimeout(5000)
 check('开局设定卡出现', await page.getByText('开局设定卡').count() > 0)
 const wv = await page.locator('.modal-sheet textarea').first().inputValue()
@@ -140,7 +167,7 @@ check('开场白写入游戏流', await page.getByText(/晨雾披上铁炉堡的
 // ---- 6. 游戏对话（写作） ----
 console.log('【游戏对话】')
 await page.locator('.chat-inputbar textarea').fill('我走到东门前，敲了三下。')
-await page.getByRole('button', { name: '➤' }).click()
+await page.locator('.send-btn').click()
 await page.waitForTimeout(2500)
 check('游戏用户消息上屏', await page.getByText('我走到东门前，敲了三下。').count() > 0)
 check('AI 回复上屏（XML 解析成正文）', await page.getByText(/回应：/).count() > 0)
@@ -149,13 +176,13 @@ check('金额折算显示', await page.getByText(/¥0\./).count() > 0)
 
 // ---- 6.5 章节总结 + 同步设定按钮 ----
 console.log('【章节总结】')
-await page.getByRole('button', { name: /📜 总结/ }).click()
+await page.getByRole('button', { name: /^总结$/ }).click()
 await page.waitForTimeout(3000)
 check('回顾卡出现', await page.getByText('铁炉堡清晨之约').count() > 0)
 check('回顾事件渲染', await page.getByText('敲开东门遇见艾莉丝').count() > 0)
 
 console.log('【同步设定按钮】')
-await page.getByRole('button', { name: /↻ 同步设定/ }).click()
+await page.getByRole('button', { name: /同步设定/ }).click()
 await page.waitForTimeout(1500)
 check('同步反馈出现', await page.getByText(/交流栏暂无新设定|已同步设定/).count() > 0)
 
@@ -163,8 +190,8 @@ check('同步反馈出现', await page.getByText(/交流栏暂无新设定|已�
 console.log('【面板 · 存档】')
 await page.locator('.tabbar').getByText('面板').click()
 await page.waitForTimeout(400)
-check('面板顶端带存档名', await page.getByText('📖 铁炉堡篇').count() > 0)
-await page.getByRole('button', { name: /📖 铁炉堡篇/ }).click()
+check('面板顶端带存档名', await page.getByText('铁炉堡篇').count() > 0)
+await page.getByRole('button', { name: /铁炉堡篇/ }).click()
 await page.waitForTimeout(300)
 check('存档切换弹层出现', await page.getByText('选择存档').count() > 0)
 await page.locator('.list-row', { hasText: '铁炉堡篇' }).click()
@@ -191,16 +218,16 @@ await page.waitForTimeout(300)
 
 // ---- 8. 世界 tab：属性设定 + 临时区 ----
 console.log('【世界 tab】')
-await page.getByRole('button', { name: /🌍 世界/ }).click()
+await page.getByRole('button', { name: /^世界$/ }).click()
 await page.waitForTimeout(400)
-check('属性设定卡出现', await page.getByText('🎛 属性设定').count() > 0)
+check('属性设定卡出现', await page.getByText('属性设定').count() > 0)
 check('默认六维展示', await page.getByText('力量', { exact: true }).count() > 0)
 
 async function pendingCount(): Promise<number> {
-  const m = await page.getByText(/🧺 临时区（AI 新展开 \d+ 条/).innerText()
+  const m = await page.getByText(/临时区（AI 新展开 \d+ 条/).innerText()
   return parseInt(m.match(/\d+/)![0], 10)
 }
-check('临时区出现', await page.getByText(/🧺 临时区（AI 新展开/).count() > 0)
+check('临时区出现', await page.getByText(/临时区（AI 新展开/).count() > 0)
 check('临时条目带类别', await page.getByText('地理环境', { exact: true }).count() > 0)
 const beforeP = await pendingCount()
 await page.getByTitle('确认写入世界书').first().click()
@@ -212,8 +239,8 @@ check('丢弃后临时区再减 1', (await pendingCount()) === beforeP - 2)
 
 // 世界观梳理（AI 归纳，不是条目抄录）
 console.log('【世界观梳理】')
-check('更新按钮存在', await page.getByRole('button', { name: /↻ 更新/ }).count() > 0)
-await page.getByRole('button', { name: /🪄 梳理/ }).click()
+check('更新按钮存在', await page.getByRole('button', { name: /^更新$/ }).count() > 0)
+await page.getByRole('button', { name: /^梳理$/ }).click()
 await page.waitForTimeout(3000)
 check('梳理摘要出现', await page.getByText('铁炉堡的清晨').count() > 0)
 check('分类归纳出现', await page.getByText('东境狼群出没').count() > 0)
@@ -221,7 +248,7 @@ check('相关条目链接', await page.getByText('铁炉堡：铁炉堡东境出
 
 // 属性建议（AI 按交流内容）
 console.log('【属性建议】')
-await page.getByRole('button', { name: /🤖 按交流建议/ }).click()
+await page.getByRole('button', { name: /按交流建议/ }).click()
 await page.waitForTimeout(2500)
 check('建议维度填入编辑区', await page.locator('input[placeholder="维度名"]').count() >= 4)
 await page.getByRole('button', { name: '保存' }).click()
@@ -230,12 +257,12 @@ check('保存后显示新维度（体魄）', await page.getByText('体魄', { e
 
 // ---- 9. 配置 tab：世界书折叠管理 + 变量 ----
 console.log('【配置 tab】')
-await page.getByRole('button', { name: /⚙️ 配置/ }).click()
+await page.getByRole('button', { name: /^配置$/ }).click()
 await page.waitForTimeout(400)
-check('绑定管理出现', await page.getByText('🔗 本存档绑定的世界书').count() > 0)
+check('绑定管理出现', await page.getByText('本存档绑定的世界书').count() > 0)
 // 世界书默认折叠 → 展开
-check('世界书默认收起', await page.getByText(/📚 世界书（.*本）/).count() > 0)
-await page.getByText(/📚 世界书（.*本）/).click()
+check('世界书默认收起', await page.getByText(/世界书（.*本）/).count() > 0)
+await page.getByText(/世界书（.*本）/).click()
 await page.waitForTimeout(300)
 check('展开后自动笔记簿在列表', await page.getByText('自动笔记簿', { exact: false }).count() > 0)
 // 条目：删除按钮存在 + 停用/启用切换
@@ -247,13 +274,13 @@ await page.getByRole('button', { name: '启用' }).first().click()
 await page.waitForTimeout(400)
 check('条目恢复启用', await page.locator('.entry-tag', { hasText: '停用' }).count() === 0)
 // 变量默认折叠 → 展开
-await page.getByText(/🧬 会话变量（.*）/).click()
+await page.getByText(/会话变量（.*）/).click()
 await page.waitForTimeout(300)
 check('变量查看器展开', await page.getByText('这里显示的是存档的宏变量').count() > 0)
 
 // ---- 10. 关系图 ----
 console.log('【关系图】')
-await page.getByRole('button', { name: /🕸 关系/ }).click()
+await page.getByRole('button', { name: /^关系$/ }).click()
 await page.waitForTimeout(500)
 check('关系图渲染', await page.locator('svg circle').count() >= 2)
 await page.locator('svg circle').first().click()

@@ -160,3 +160,17 @@ export interface Relation {
   description?: string
   createdAt: number
 }
+
+// ---------------- AI 操作审计（v1.5） ----------------
+/** AI 协议块操作（临时区审阅 → 确认执行/退回） */
+export interface Op {
+  id?: number
+  campaignId: number
+  /** 操作类型：entry.upsert / entry.delete / entry.disable / char.upsert / char.rename / rel.upsert / rel.delete / schema.propose */
+  kind: string
+  /** 操作参数 JSON */
+  payload: string
+  status: 'pending' | 'done' | 'rejected'
+  createdAt: number
+  doneAt?: number
+}

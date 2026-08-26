@@ -1,7 +1,7 @@
 import Dexie, { type Table } from 'dexie'
 import type {
   ApiConfig, Worldbook, Entry, Campaign, CampaignBinding,
-  Preset, Message, Character, Relation,
+  Preset, Message, Character, Relation, Op,
 } from './types'
 
 class NovelRpgDB extends Dexie {
@@ -14,6 +14,8 @@ class NovelRpgDB extends Dexie {
   messages!: Table<Message, number>
   characters!: Table<Character, number>
   relations!: Table<Relation, number>
+  /** v1.5：AI 操作审计（协议块 → 临时区 → 确认执行/退回） */
+  ops!: Table<Op, number>
 
   constructor() {
     super('novel-rpg')
@@ -31,6 +33,10 @@ class NovelRpgDB extends Dexie {
     // v1.2：消息双流（talk/game），旧数据 stream 缺省 = game
     this.version(2).stores({
       messages: '++id, campaignId, seq, stream, [campaignId+seq], [campaignId+stream+seq]',
+    })
+    // v1.5：AI 操作审计表
+    this.version(3).stores({
+      ops: '++id, campaignId, status, [campaignId+status]',
     })
   }
 }

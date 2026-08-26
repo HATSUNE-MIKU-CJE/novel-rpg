@@ -3,6 +3,7 @@ import { ref, computed, onMounted } from 'vue'
 import { db } from '../db'
 import { useDataStore } from '../stores/data'
 import { useChatStore } from '../stores/chat'
+import Icon from '../components/Icon.vue'
 import { BUILTIN_NODES } from '../engine/builtinNodes'
 import { DEEPSEEK_PRICES, isPeakHour, PRICE_SOURCE_DATE } from '../engine/pricing'
 import { checkForUpdate, UPDATE_REPO } from '../engine/updater'
@@ -142,12 +143,12 @@ const priceRows = Object.entries(DEEPSEEK_PRICES).map(([model, r]) => ({ model, 
 
 <template>
   <div class="page">
-    <div class="page-title">⚙️ 设置</div>
+    <div class="page-title" style="display:flex; align-items:center; gap:7px"><span style="color:var(--accent-deep); display:flex"><Icon name="gear" :size="18" /></span>设置</div>
 
     <!-- 子导航 -->
     <div style="display:flex; gap:8px; margin-bottom:14px">
-      <button class="btn btn-sm" :class="subTab === 'api' ? 'btn-primary' : 'btn-ghost'" @click="subTab='api'">🔌 API</button>
-      <button class="btn btn-sm" :class="subTab === 'preset' ? 'btn-primary' : 'btn-ghost'" @click="subTab='preset'">🎛 预设</button>
+      <button class="btn btn-sm" :class="subTab === 'api' ? 'btn-primary' : 'btn-ghost'" @click="subTab='api'"><Icon name="link" :size="13" /> API</button>
+      <button class="btn btn-sm" :class="subTab === 'preset' ? 'btn-primary' : 'btn-ghost'" @click="subTab='preset'"><Icon name="sliders" :size="13" /> 预设</button>
       <button class="btn btn-sm" :class="subTab === 'stats' ? 'btn-primary' : 'btn-ghost'" @click="subTab='stats'">📊 统计</button>
     </div>
 

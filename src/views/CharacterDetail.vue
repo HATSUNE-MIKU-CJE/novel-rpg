@@ -2,6 +2,7 @@
 import { ref, computed, watch } from 'vue'
 import { db } from '../db'
 import RadarChart from './RadarChart.vue'
+import Icon from '../components/Icon.vue'
 import type { AttrSchema } from '../engine/extractor'
 import type { Character } from '../types'
 
@@ -140,14 +141,14 @@ async function save() {
 
     <!-- 描述 -->
     <div class="card" style="max-width:640px; margin:12px auto 0">
-      <label style="display:block; font-size:13px; font-weight:600; color:var(--ink-soft); margin-bottom:6px">📝 描述</label>
+      <label style="display:flex; align-items:center; gap:5px; font-size:13px; font-weight:600; color:var(--ink-soft); margin-bottom:6px"><Icon name="doc" :size="15" /> 描述</label>
       <textarea v-if="editing" v-model="draft.description" rows="4"></textarea>
       <div v-else class="char-desc">{{ character.description || '暂无描述' }}</div>
     </div>
 
     <!-- 关系 -->
     <div v-if="relations.length" class="card" style="max-width:640px; margin:12px auto 0">
-      <label style="display:block; font-size:13px; font-weight:600; color:var(--ink-soft); margin-bottom:6px">🕸 关系</label>
+      <label style="display:flex; align-items:center; gap:5px; font-size:13px; font-weight:600; color:var(--ink-soft); margin-bottom:6px"><Icon name="network" :size="15" /> 关系</label>
       <div v-for="(r, i) in relations" :key="i" class="rel-line">
         {{ r.toChar === character.name ? '←' : '→' }} {{ r.toChar === character.name ? r.fromChar : r.toChar }}
         <span class="list-sub">（{{ r.relType }} {{ r.label || '' }}）</span>
@@ -156,7 +157,7 @@ async function save() {
 
     <!-- 关联世界书 -->
     <div v-if="relatedEntries.length" class="card" style="max-width:640px; margin:12px auto 0">
-      <label style="display:block; font-size:13px; font-weight:600; color:var(--ink-soft); margin-bottom:6px">📚 关联世界书</label>
+      <label style="display:flex; align-items:center; gap:5px; font-size:13px; font-weight:600; color:var(--ink-soft); margin-bottom:6px"><Icon name="library" :size="15" /> 关联世界书</label>
       <div v-for="(e, i) in relatedEntries" :key="i" class="entry-item" style="padding:6px 2px">
         <span class="entry-tag" :class="e.key === '常驻' ? 'tag-constant' : 'tag-trigger'">{{ e.key === '常驻' ? '常驻' : e.key.slice(0, 8) }}</span>
         <div class="list-sub" style="white-space:pre-wrap; flex:1">{{ e.content.slice(0, 60) }}{{ e.content.length > 60 ? '…' : '' }}</div>
@@ -169,7 +170,7 @@ async function save() {
         <button class="btn btn-ghost" style="flex:1" @click="editing = false">取消</button>
         <button class="btn btn-primary" style="flex:2" @click="save">保存</button>
       </template>
-      <button v-else class="btn btn-warm btn-block" @click="editing = true">✏️ 编辑角色卡</button>
+      <button v-else class="btn btn-warm btn-block" @click="editing = true"><Icon name="pencil" :size="14" /> 编辑角色卡</button>
     </div>
   </div>
 </template>

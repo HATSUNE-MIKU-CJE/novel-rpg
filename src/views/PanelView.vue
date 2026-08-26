@@ -6,9 +6,11 @@ import { useChatStore } from '../stores/chat'
 import { formatSpecMarkdown, formatSpecSchema } from '../engine/specExport'
 import { exportFile } from '../engine/exportFile'
 import { CATEGORIES, type AttrSchema } from '../engine/extractor'
+import { opGroup, opGroupLabel, opTitle, type OpBlock } from '../engine/ops'
 import RelationGraph from './RelationGraph.vue'
 import CharacterDetail from './CharacterDetail.vue'
-import type { Character, Relation, Worldbook, Entry } from '../types'
+import Icon from '../components/Icon.vue'
+import type { Character, Relation, Worldbook, Entry, Op } from '../types'
 
 const ds = useDataStore()
 const chat = useChatStore()
@@ -117,7 +119,69 @@ async function refreshWorld() {
 }
 async function doOverview() {
   const o = await chat.buildWorldOverview()
-  showToast(o ? '✨ 已梳理世界观总览' : (chat.error || '梳理失败'))
+  showToast(o ? '已梳理世界观总览' : (chat.error || '梳理失败'))
+}
+
+// ---- v1.5 AI 操作审计（临时区） ----
+const pendingOps = ref<Op[]>([])
+async function refreshOps() {
+  const cid = chat.currentCampaignId
+  pendingOps.value = cid
+    ? await db.ops.where('campaignId').equals(cid).and((o) => o.status === 'pending').toArray()
+    : []
+}
+watch(() => chat.currentCampaignId, refreshOps)
+onMounted(refreshOps)
+
+function opPayload(op: Op): OpBlock {
+  try { return JSON.parse(op.payload) as OpBlock } catch { return { op: op.kind } }
+}
+/** key 宽松匹配（与 store 一致：相等/互相包含） */
+function eMatch(eKey: string, key?: string): boolean {
+  const a = (eKey || '').split(/[,，]/).map((s) => s.trim()).filter(Boolean)
+  const b = (key || '').split(/[,，]/).map((s) => s.trim()).filter(Boolean)
+  return a.some((x) => b.includes(x) || b.some((y) => y.includes(x) || x.includes(y)))
+}
+/** 操作展示视图（标题/预览/diff） */
+function opView(op: Op): { group: string; groupLabel: string; title: string; preview: string; before?: string; after?: string } {
+  const p = opPayload(op)
+  const g = opGroup(op.kind)
+  const title = opTitle(p)
+  let preview = ''
+  let before: string | undefined
+  let after: string | undefined
+  if (op.kind === 'entry.upsert') {
+    const exist = activeWorldEntries().find((e) => !e.key || eMatch(e.key, p.key))
+    if (exist) { before = exist.content; after = p.content ?? '' }
+    else if (p.content) preview = `新条目：${p.content.slice(0, 80)}`
+  } else if (op.kind === 'entry.delete' || op.kind === 'entry.disable') {
+    preview = activeWorldEntries().find((e) => !e.key || eMatch(e.key, p.key))?.content ?? '（在当前生效条目中未找到，确认后可能无效果）'
+  } else if (op.kind === 'char.upsert') {
+    preview = [p.identity, p.realm && schema.value.realmLabel ? `${schema.value.realmLabel}：${p.realm}` : '', p.description && p.description.slice(0, 60)].filter(Boolean).slice(0, 2).join(' · ')
+    if ((p.attrs ?? []).length) preview += ` · 属性 ${(p.attrs ?? []).map((a) => `${a.label}${a.value}`).join('/')}`
+  } else if (op.kind === 'schema.propose') {
+    preview = (p.dims ?? []).map((d) => d.label).filter(Boolean).join('、') + (p.realmLabel ? `（${p.realmLabel}）` : '')
+  } else if (op.kind === 'rel.upsert' || op.kind === 'rel.delete') {
+    preview = p.label ?? ''
+  }
+  return { group: g, groupLabel: opGroupLabel(op.kind), title, preview, before, after }
+}
+
+async function confirmOp(op: Op) {
+  const ok = await chat.executeOp(op.id!)
+  showToast(ok ? '已执行' : (chat.error || '执行失败（目标不存在）'))
+  await refreshOps()
+  await refreshChars()
+}
+async function rejectOp(op: Op) {
+  await chat.rejectOp(op.id!)
+  await refreshOps()
+}
+async function confirmAllOps() {
+  const n = await chat.acceptAllOps()
+  showToast(`已执行 ${n} 项操作${pendingOps.value.some((o) => opGroup(o.kind) === 'del') ? '（删除类未包含，请逐条确认）' : ''}`)
+  await refreshOps()
+  await refreshChars()
 }
 
 const pendingEntries = ref<Entry[]>([])
@@ -365,18 +429,18 @@ function showToast(msg: string) {
   <div class="page">
     <!-- 顶端栏：标题 + 存档切换 -->
     <header class="panel-header">
-      <div class="page-title" style="margin:0">🎭 面板</div>
+      <div class="page-title" style="margin:0; display:flex; align-items:center; gap:7px"><span style="color:var(--accent-deep); display:flex"><Icon name="panel" :size="18" /></span>面板</div>
       <button class="btn btn-soft btn-sm" @click="showCampaigns = true">
-        📖 {{ campaignName }} <span style="opacity:.7">▾</span>
+        <Icon name="book" :size="13" /> {{ campaignName }} <Icon name="chevronDown" :size="11" style="opacity:.7" />
       </button>
     </header>
 
     <!-- 选项栏 -->
     <div class="panel-tabs">
-      <button class="btn btn-sm" :class="tab === 'chars' ? 'btn-primary' : 'btn-ghost'" @click="tab='chars'">👤 角色</button>
-      <button class="btn btn-sm" :class="tab === 'rels' ? 'btn-primary' : 'btn-ghost'" @click="tab='rels'">🕸 关系</button>
-      <button class="btn btn-sm" :class="tab === 'world' ? 'btn-primary' : 'btn-ghost'" @click="tab='world'">🌍 世界</button>
-      <button class="btn btn-sm" :class="tab === 'config' ? 'btn-primary' : 'btn-ghost'" @click="tab='config'">⚙️ 配置</button>
+      <button class="btn btn-sm" :class="tab === 'chars' ? 'btn-primary' : 'btn-ghost'" @click="tab='chars'"><Icon name="user" :size="14" /> 角色</button>
+      <button class="btn btn-sm" :class="tab === 'rels' ? 'btn-primary' : 'btn-ghost'" @click="tab='rels'"><Icon name="network" :size="14" /> 关系</button>
+      <button class="btn btn-sm" :class="tab === 'world' ? 'btn-primary' : 'btn-ghost'" @click="tab='world'"><Icon name="globe" :size="14" /> 世界</button>
+      <button class="btn btn-sm" :class="tab === 'config' ? 'btn-primary' : 'btn-ghost'" @click="tab='config'"><Icon name="gear" :size="14" /> 配置</button>
     </div>
 
     <!-- ===== 角色 ===== -->
@@ -398,14 +462,14 @@ function showToast(msg: string) {
         </div>
       </div>
       <div v-if="organizeStats" class="list-sub" style="margin-top:10px; text-align:center">
-        🕐 上次整理：角色 {{ organizeStats.chars }} · 关系 {{ organizeStats.rels }} · 事实 {{ organizeStats.facts }}
+        上次整理：角色 {{ organizeStats.chars }} · 关系 {{ organizeStats.rels }} · 事实 {{ organizeStats.facts }}
         （{{ new Date(organizeStats.at).toLocaleTimeString() }}）
       </div>
       <button
         class="btn btn-soft btn-block" style="margin-top: 14px"
         :disabled="chat.organizing"
         @click="organizeNow"
-      >{{ chat.organizing ? '📖 思客正在记录…' : '🔮 整理世界书（提取角色/事实）' }}</button>
+      >{{ chat.organizing ? '思客正在记录…' : '整理世界书（提取角色/事实）' }}</button>
     </div>
 
     <!-- ===== 关系 ===== -->
@@ -424,11 +488,11 @@ function showToast(msg: string) {
       <!-- 属性设定 -->
       <div class="card" style="margin-bottom:12px">
         <div style="display:flex; align-items:center; margin-bottom:6px">
-          <b style="flex:1">🎛 属性设定（存档级）</b>
+          <b style="flex:1"><Icon name="sliders" :size="15" /> 属性设定（存档级）</b>
           <button class="btn btn-warm btn-sm" :disabled="schemaLoading" style="margin-right:6px" @click="suggestSchema">
-            {{ schemaLoading ? '生成中…' : '🤖 按交流建议' }}
+            {{ schemaLoading ? '生成中…' : '按交流建议' }}
           </button>
-          <button class="btn btn-ghost btn-sm" @click="beginSchemaEdit">✏️ 编辑</button>
+          <button class="btn btn-ghost btn-sm" @click="beginSchemaEdit"><Icon name="pencil" :size="13" /> 编辑</button>
         </div>
         <div class="list-sub" style="margin-bottom:6px">
           本存档的属性维度：<span v-for="d in schema.dims" :key="d.label" class="entry-tag tag-constant" style="margin:2px 3px 0 0">{{ d.label }}</span>
@@ -440,7 +504,7 @@ function showToast(msg: string) {
           <label style="font-size:12.5px; color:var(--accent-deep); font-weight:600; display:block; margin-bottom:6px">维度（4~8 个，可改）</label>
           <div v-for="(d, i) in schemaDraft.dims" :key="i" class="attr-edit-row">
             <input v-model="d.label" placeholder="维度名" style="flex:1" />
-            <button class="btn btn-danger btn-sm" @click="delDim(i)">✗</button>
+            <button class="btn btn-danger btn-sm" @click="delDim(i)"><Icon name="xmark" :size="12" /></button>
           </div>
           <button class="btn btn-soft btn-sm" style="margin-top:6px" @click="addDim">＋ 维度</button>
           <div class="field" style="margin-top:10px">
@@ -457,7 +521,7 @@ function showToast(msg: string) {
       <!-- 临时区：AI 新展开的信息 -->
       <div v-if="pendingEntries.length" class="card" style="margin-bottom:12px; border:1px solid var(--warm)">
         <div style="display:flex; align-items:center; margin-bottom:8px">
-          <b style="flex:1">🧺 临时区（AI 新展开 {{ pendingEntries.length }} 条）</b>
+          <b style="flex:1"><Icon name="archive" :size="15" /> 临时区（AI 新展开 {{ pendingEntries.length }} 条）</b>
           <button class="btn btn-warm btn-sm" @click="acceptAll">全部确认</button>
         </div>
         <div class="list-sub" style="margin-bottom:6px">
@@ -471,30 +535,62 @@ function showToast(msg: string) {
             <div class="list-sub" style="color:var(--accent-deep); font-size:11px">{{ e.category || '其他' }}</div>
             <div class="list-sub" style="white-space:pre-wrap">{{ e.content.slice(0, 80) }}</div>
           </div>
-          <button class="btn btn-warm btn-sm" title="确认写入世界书" @click="acceptEntry(e)">✓</button>
+          <button class="btn btn-warm btn-sm" title="确认写入世界书" @click="acceptEntry(e)"><Icon name="check" :size="13" /></button>
           <button class="btn btn-ghost btn-sm" title="编辑" @click="openEdit(e)">编</button>
-          <button class="btn btn-danger btn-sm" title="丢弃" @click="rejectEntry(e)">✗</button>
+          <button class="btn btn-danger btn-sm" title="丢弃" @click="rejectEntry(e)"><Icon name="xmark" :size="13" /></button>
+        </div>
+      </div>
+
+      <!-- AI 操作审计（交流栏主持替玩家写世界书） -->
+      <div v-if="pendingOps.length" class="card" style="margin-bottom:12px; border:1px solid var(--accent)">
+        <div style="display:flex; align-items:center; margin-bottom:8px">
+          <b style="flex:1"><Icon name="hand" :size="15" /> AI 操作（{{ pendingOps.length }} 项待确认）</b>
+          <button class="btn btn-soft btn-sm" @click="confirmAllOps">全部确认（不含删除）</button>
+        </div>
+        <div class="list-sub" style="margin-bottom:6px">
+          这是你让主持记录/修改/删除的设定；确认才执行，退回则不生效。
+        </div>
+        <div v-for="op in pendingOps" :key="op.id" class="entry-item">
+          <span class="entry-tag" :class="{
+            'tag-constant': opView(op).group === 'new',
+            'tag-trigger': opView(op).group === 'mod' || opView(op).group === 'attr',
+            'tag-warm': opView(op).group === 'rename',
+            'tag-danger': opView(op).group === 'del',
+          }">{{ opView(op).groupLabel }}</span>
+          <div style="flex:1; min-width:0">
+            <div class="list-title" style="font-size:13px">{{ opView(op).title }}</div>
+            <div v-if="opView(op).before !== undefined" class="list-sub" style="white-space:pre-wrap">
+              <span style="text-decoration:line-through; opacity:.6">{{ (opView(op).before || '').slice(0, 60) }}</span>
+              <span style="color:var(--ok)"> → {{ (opView(op).after || '').slice(0, 60) }}</span>
+            </div>
+            <div v-else class="list-sub" style="white-space:pre-wrap">{{ opView(op).preview }}</div>
+          </div>
+          <button
+            class="btn btn-sm" :class="opView(op).group === 'del' ? 'btn-danger' : 'btn-warm'"
+            @click="confirmOp(op)"
+          >{{ opView(op).group === 'del' ? '确认删除' : '确认' }}</button>
+          <button class="btn btn-ghost btn-sm" @click="rejectOp(op)">退回</button>
         </div>
       </div>
 
       <!-- 世界观总览（AI 梳理，非条目抄录） -->
       <div class="card" style="margin-bottom:12px">
         <div style="display:flex; align-items:center; margin-bottom:6px">
-          <b style="flex:1">🌍 世界观总览</b>
+          <b style="flex:1"><Icon name="globe" :size="15" /> 世界观总览</b>
           <button class="btn btn-warm btn-sm" style="margin-right:6px" :disabled="chat.organizing" @click="refreshWorld">
-            {{ chat.organizing ? '…' : '↻ 更新' }}
+            {{ chat.organizing ? '…' : '更新' }}
           </button>
           <button class="btn btn-soft btn-sm" :disabled="chat.organizing" @click="doOverview">
-            {{ overview ? '🪄 重新梳理' : '🪄 梳理' }}
+            {{ overview ? '重新梳理' : '梳理' }}
           </button>
         </div>
         <div v-if="staleOverview" class="list-sub" style="margin-bottom:6px; color:var(--warm)">
-          🧺 有新内容未梳理 —— 点「重新梳理」更新总览
+          有新内容未梳理 —— 点「重新梳理」更新总览
         </div>
         <template v-if="overview">
           <div class="detail-text">{{ overview.summary }}</div>
           <div v-for="b in overview.blocks" :key="b.category" class="world-block">
-            <b>🌍 {{ b.category }}</b>
+            <b><Icon name="globe" :size="14" /> {{ b.category }}</b>
             <div class="detail-text" style="margin:2px 0">{{ b.content }}</div>
             <div v-if="relatedEntriesOf(b.related).length">
               <div v-for="(e, i) in relatedEntriesOf(b.related)" :key="i" class="list-sub">
@@ -504,7 +600,7 @@ function showToast(msg: string) {
           </div>
         </template>
         <div v-else-if="activeWorldEntries().length" class="list-sub">
-          点「🪄 梳理」—— AI 会把世界书提炼成世界观介绍（不是抄条目）
+          点「梳理」—— AI 会把世界书提炼成世界观介绍（不是抄条目）
         </div>
         <div v-else class="list-sub">
           先把条目确认进世界书（见上方临时区），AI 就能为你梳理世界观
@@ -516,7 +612,7 @@ function showToast(msg: string) {
     <div v-if="tab === 'config'">
       <!-- 本存档绑定的世界书 -->
       <div class="card" style="margin-bottom:12px">
-        <b style="margin-bottom:6px; display:block">🔗 本存档绑定的世界书（注入对话）</b>
+        <b style="margin-bottom:6px; display:block"><Icon name="link" :size="14" /> 本存档绑定的世界书（注入对话）</b>
         <div v-if="!campaignLevelBindings.length" class="list-sub">未绑定——只有下面「全部确认」的笔记簿内容会进入上下文</div>
         <div v-for="wb in campaignLevelBindings" :key="'b' + wb.id" class="entry-item">
           <span class="entry-tag tag-constant">已绑</span>
@@ -533,18 +629,18 @@ function showToast(msg: string) {
       <!-- 工具行：导出规范 / 导入 -->
       <div class="card" style="margin-bottom:12px">
         <div class="collapse-head" @click="showWbSection = !showWbSection">
-          <b>📚 世界书（{{ wbList.length }} 本）</b>
-          <span class="collapse-arrow">{{ showWbSection ? '▲ 收起' : '▼ 展开' }}</span>
+          <b><Icon name="library" :size="15" /> 世界书（{{ wbList.length }} 本）</b>
+          <span class="collapse-arrow">{{ showWbSection ? '收起' : '展开' }}</span>
         </div>
         <template v-if="showWbSection">
           <div style="display:flex; gap:8px; margin:8px 0 12px">
             <button class="btn btn-warm btn-sm" style="flex:1" @click="download('世界书格式规范.md', formatSpecMarkdown, 'text/markdown')">
-              📄 规范.md
+              <Icon name="doc" :size="13" /> 规范.md
             </button>
             <button class="btn btn-warm btn-sm" style="flex:1" @click="download('worldbook-schema.json', formatSpecSchema)">
-              📐 Schema.json
+              <Icon name="braces" :size="13" /> Schema.json
             </button>
-            <button class="btn btn-soft btn-sm" style="flex:1" @click="showImportModal = true">📥 导入</button>
+            <button class="btn btn-soft btn-sm" style="flex:1" @click="showImportModal = true"><Icon name="download" :size="13" /> 导入</button>
           </div>
 
           <!-- 世界书列表 -->
@@ -590,8 +686,8 @@ function showToast(msg: string) {
       <!-- 变量查看器（折叠） -->
       <div class="card">
         <div class="collapse-head" @click="showVarsSection = !showVarsSection">
-          <b>🧬 会话变量（{{ varsEntries.length }}）</b>
-          <span class="collapse-arrow">{{ showVarsSection ? '▲ 收起' : '▼ 展开' }}</span>
+          <b><Icon name="dna" :size="15" /> 会话变量（{{ varsEntries.length }}）</b>
+          <span class="collapse-arrow">{{ showVarsSection ? '收起' : '展开' }}</span>
         </div>
         <template v-if="showVarsSection">
           <div class="list-sub" style="margin:8px 0">
@@ -641,7 +737,7 @@ function showToast(msg: string) {
           <div>
             <div class="list-title">{{ c.name }}</div>
             <div class="list-sub">
-              {{ c.gameStarted ? '🎮 游戏中' : '💬 交流中' }} · 更新于 {{ new Date(c.lastActive).toLocaleString() }}
+              {{ c.gameStarted ? '游戏中' : '交流中' }} · 更新于 {{ new Date(c.lastActive).toLocaleString() }}
             </div>
           </div>
         </div>
