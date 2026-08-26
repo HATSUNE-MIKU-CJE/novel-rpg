@@ -11,7 +11,7 @@ import {
   extractFacts, extractJson, mergeAttrs, applyRenames, normCategory,
   parseAttrSchema, attrSchemaJson, type AttrSchema,
 } from '../engine/extractor'
-import { parseOps, opGroup, type OpBlock } from '../engine/ops'
+import { parseOps, opGroup, resolveRefs, type OpBlock } from '../engine/ops'
 import { httpFetch } from '../engine/http'
 import type { WorldOverview, Entry as EntryType } from '../types'
 
@@ -280,23 +280,14 @@ export const useChatStore = defineStore('chat', {
       }
     },
 
-    /** 交流栏 system：主持人格 + 已生效设定参考（世界书 + 角色卡） */
+    /** 交流栏 system：主持人格 + 已生效设定参考（世界书带编号 + 角色卡） */
     async buildTalkSystem(): Promise<string> {
       const ds = useDataStore()
       const c = this.currentCampaign
       const parts = [TALK_SYSTEM]
       if (c?.id) {
-        const bindings = await db.campaignBindings.where('campaignId').equals(c.id).toArray()
-        const wbIds = bindings.map((b) => b.worldbookId)
-        if (c.notebookWorldbookId) wbIds.push(c.notebookWorldbookId)
-        const lines: string[] = []
-        for (const wbId of wbIds) {
-          for (const e of ds.entriesOf(wbId)) {
-            if (!e.enabled || !e.content.trim()) continue
-            if (e.source === 'ai' && e.status !== 'accepted') continue
-            lines.push(`【${e.key ? e.key : '常驻'}】${e.content}`)
-          }
-        }
+        const entries = await activeTalkEntries(c)
+        const lines = entries.map((e, i) => `【${i + 1}】${e.category || '其他'}·${e.key || '常驻'}：${e.content}`)
         const charText = await this.charCardsText()
         if (charText) lines.push(charText)
         const schema = this.attrSchema()
@@ -304,6 +295,16 @@ export const useChatStore = defineStore('chat', {
         if (lines.length) parts.push(`【当前已生效的设定参考】\n${lines.join('\n').slice(0, 8000)}`)
       }
       return parts.join('\n\n')
+    },
+
+    /** 与 buildTalkSystem 顺序一致的编号→条目映射（AI 提交 ref 时解析用） */
+    async buildSettingRefs(): Promise<Array<{ seq: number; entryId: number }>> {
+      const c = this.currentCampaign
+      if (!c?.id) return []
+      const entries = await activeTalkEntries(c)
+      return entries
+        .map((e, i) => ({ seq: i + 1, entryId: e.id! }))
+        .filter((r) => r.entryId)
     },
 
     /** 游戏流 prompts（预设链，强制写作模式；外部预设兜底） */
@@ -467,14 +468,15 @@ export const useChatStore = defineStore('chat', {
         const cost = usage && estimateCostYuan(api.model, usage, new Date())
         const costYuan = cost?.costYuan
 
-        // v1.5：交流流解析 AI 操作块 → 临时区审计
+        // v1.5：交流流解析 AI 操作块 → 临时区审计；ref 编号就地解析为 entryId
         let content = reply.content
         let opCount = 0
         if (stream === 'talk') {
           const r = parseOps(reply.content)
           content = r.clean
           if (r.ops.length) {
-            for (const o of r.ops) {
+            const refs = await this.buildSettingRefs()
+            for (const o of resolveRefs(r.ops, refs)) {
               await db.ops.add(plainMsg({
                 campaignId: this.currentCampaignId,
                 kind: o.op,
@@ -581,7 +583,10 @@ export const useChatStore = defineStore('chat', {
         switch (p.op) {
           case 'entry.upsert': {
             const notebook = await this.ensureNotebook()
-            const exist = findNotebookEntry(ds, notebook.id!, normalizeKeys(p.key))
+            // 优先 entryId（ref 已解析）；回退 key 匹配
+            const exist = p.entryId
+              ? await db.entries.get(p.entryId)
+              : findNotebookEntry(ds, notebook.id!, normalizeKeys(p.key))
             if (exist) {
               exist.content = p.content ?? exist.content
               if (p.category) exist.category = normCategory(p.category)
@@ -603,13 +608,17 @@ export const useChatStore = defineStore('chat', {
           }
           case 'entry.delete': {
             const notebook = await this.ensureNotebook()
-            const exist = findNotebookEntry(ds, notebook.id!, normalizeKeys(p.key))
+            const exist = p.entryId
+              ? await db.entries.get(p.entryId)
+              : findNotebookEntry(ds, notebook.id!, normalizeKeys(p.key))
             if (exist?.id) { await db.entries.delete(exist.id); return true }
             return false
           }
           case 'entry.disable': {
             const notebook = await this.ensureNotebook()
-            const exist = findNotebookEntry(ds, notebook.id!, normalizeKeys(p.key))
+            const exist = p.entryId
+              ? await db.entries.get(p.entryId)
+              : findNotebookEntry(ds, notebook.id!, normalizeKeys(p.key))
             if (exist) { exist.enabled = 0; exist.updatedAt = Date.now(); await db.entries.put(plainMsg(exist)); return true }
             return false
           }
@@ -1035,6 +1044,23 @@ function findNotebookEntry(ds: ReturnType<typeof useDataStore>, notebookId: numb
     if (!eKeys.length && keys.length === 0) return true
     return eKeys.some((k) => keys.includes(k) || keys.some((x) => x.includes(k) || k.includes(x)))
   })
+}
+
+/** 当前生效的世界书条目（与 buildTalkSystem 参考清单同序同过滤） */
+async function activeTalkEntries(c: Campaign): Promise<EntryType[]> {
+  const ds = useDataStore()
+  const bindings = await db.campaignBindings.where('campaignId').equals(c.id!).toArray()
+  const wbIds = bindings.map((b) => b.worldbookId)
+  if (c.notebookWorldbookId) wbIds.push(c.notebookWorldbookId)
+  const out: EntryType[] = []
+  for (const wbId of wbIds) {
+    for (const e of ds.entriesOf(wbId)) {
+      if (!e.enabled || !e.content.trim()) continue
+      if (e.source === 'ai' && e.status !== 'accepted') continue
+      out.push(e)
+    }
+  }
+  return out
 }
 
 interface FullReply { content: string; usage: any; reasoning?: string }

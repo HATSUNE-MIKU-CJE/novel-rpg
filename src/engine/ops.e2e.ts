@@ -2,7 +2,7 @@
  * v1.5 AI 操作协议解析测试。
  *   npx tsx src/engine/ops.e2e.ts
  */
-import { parseOps, opGroup, opGroupLabel, opTitle } from './ops'
+import { parseOps, opGroup, opGroupLabel, opTitle, resolveRefs } from './ops'
 
 let pass = 0, fail = 0
 function check(name: string, cond: boolean, detail?: string) {
@@ -38,6 +38,19 @@ check('分组：改名/属性', opGroup('char.rename') === 'rename' && opGroup('
 check('标签中文', opGroupLabel('char.rename') === '改名' && opGroupLabel('entry.delete') === '删除')
 check('标题', opTitle({ op: 'char.rename', from: '爱丽丝', to: '艾莉丝' }) === '角色改名「爱丽丝」→「艾莉丝」')
 check('标题（条目）', opTitle({ op: 'entry.upsert', key: '修炼体系' }) === '世界书条目「修炼体系」')
+
+console.log('【ref 编号解析】')
+const refs = [{ seq: 1, entryId: 101 }, { seq: 2, entryId: 102 }]
+const rr = resolveRefs([
+  { op: 'entry.delete', ref: 1 },
+  { op: 'entry.upsert', ref: 2, content: '新内容' },
+  { op: 'entry.delete', ref: 99 },
+  { op: 'entry.upsert', content: '无 ref' },
+], refs)
+check('ref 解析成 entryId', rr[0].entryId === 101 && rr[0].ref === undefined)
+check('多字段保留', rr[1].entryId === 102 && rr[1].content === '新内容')
+check('越界 ref 原样保留', rr[2].ref === 99 && rr[2].entryId === undefined)
+check('无 ref 不动', rr[3].entryId === undefined)
 
 console.log(`\n结果：${pass} 通过 / ${fail} 失败`)
 process.exit(fail ? 1 : 0)

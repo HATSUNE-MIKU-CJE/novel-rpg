@@ -185,6 +185,68 @@ async function confirmAllOps() {
 }
 
 const pendingEntries = ref<Entry[]>([])
+
+/** 世界 tab：按类别分组的条目（候选类别在前，自定义类别在后） */
+const worldGroups = computed(() => {
+  const entries = activeWorldEntries()
+  const groups = new Map<string, Entry[]>()
+  for (const e of entries) {
+    const cat = e.category || '其他'
+    if (!groups.has(cat)) groups.set(cat, [])
+    groups.get(cat)!.push(e)
+  }
+  const ordered = CATEGORIES.filter((c) => groups.has(c)).map((c) => ({ category: c as string, entries: groups.get(c)! }))
+  for (const cat of groups.keys()) {
+    if (!(CATEGORIES as readonly string[]).includes(cat)) ordered.push({ category: cat, entries: groups.get(cat)! })
+  }
+  return ordered
+})
+
+/** 类别卡概括：梳理过的 block 内容优先，否则首条截断 */
+function catSummary(cat: string): string {
+  const b = overview.value?.blocks.find((x) => x.category === cat)
+  if (b?.content) return b.content
+  const g = worldGroups.value.find((x) => x.category === cat)
+  const first = g?.entries[0]
+  return first ? `${first.content.slice(0, 70)}${first.content.length > 70 ? '…' : ''}` : ''
+}
+
+/** 类别卡详情（全屏） */
+const catDetail = ref<string | null>(null)
+const catEntries = computed(() =>
+  catDetail.value ? worldGroups.value.find((x) => x.category === catDetail.value)?.entries ?? [] : [],
+)
+async function deleteCategory(cat: string) {
+  const ents = worldGroups.value.find((x) => x.category === cat)?.entries ?? []
+  if (!confirm(`删除「${cat}」卡将删除 ${ents.length} 条设定，确定？`)) return
+  for (const e of ents) if (e.id) await ds.deleteEntry(e.id)
+  catDetail.value = null
+  showToast(`已删除「${cat}」`)
+}
+const editCat = ref(false)
+const editCatName = ref('')
+function beginRenameCat(cat: string) {
+  editCatName.value = cat
+  editCat.value = true
+}
+async function renameCategory(cat: string) {
+  const name = editCatName.value.trim()
+  editCat.value = false
+  if (!name || name === cat) return
+  const ents = worldGroups.value.find((x) => x.category === cat)?.entries ?? []
+  for (const e of ents) await ds.saveEntry({ ...e, category: name, updatedAt: Date.now() })
+  catDetail.value = null
+  showToast(`「${cat}」已并入「${name}」`)
+}
+async function openNewEntryIn(cat: string) {
+  const nbw = await chat.ensureNotebook()
+  openEdit({ worldbookId: nbw.id!, source: 'manual', enabled: 1, createdAt: 0, updatedAt: 0, key: '', content: '', category: cat } as Entry)
+}
+
+/** 条目编辑器类别选择（支持新建类别） */
+const catSel = ref('其他')
+const catNewName = ref('')
+
 async function refreshPending() {
   const wb = notebook.value
   pendingEntries.value = wb?.id
@@ -269,13 +331,14 @@ async function saveEntry() {
   if (!editEntry.value) return
   const e = editEntry.value
   const isNew = !e.id
+  const category = catSel.value === '__new__' ? catNewName.value.trim() : (catSel.value || '其他')
   await ds.saveEntry({
     ...e,
     createdAt: e.createdAt || Date.now(),
     updatedAt: Date.now(),
     enabled: e.enabled ? 1 : 0,
     source: e.source || 'manual',
-    category: (e.category || '其他'),
+    category: category || '其他',
   })
   showEntryEditor.value = false
   editEntry.value = null
@@ -407,6 +470,8 @@ async function deleteVar(k: string) {
 /** 打开条目编辑器（复用） */
 function openEdit(e: Entry) {
   editEntry.value = { ...e }
+  catNewName.value = ''
+  catSel.value = e.category || '其他'
   showEntryEditor.value = true
 }
 
@@ -573,37 +638,86 @@ function showToast(msg: string) {
         </div>
       </div>
 
-      <!-- 世界观总览（AI 梳理，非条目抄录） -->
-      <div class="card" style="margin-bottom:12px">
-        <div style="display:flex; align-items:center; margin-bottom:6px">
-          <b style="flex:1"><Icon name="globe" :size="15" /> 世界观总览</b>
-          <button class="btn btn-warm btn-sm" style="margin-right:6px" :disabled="chat.organizing" @click="refreshWorld">
-            {{ chat.organizing ? '…' : '更新' }}
+      <!-- 总览条（一句话 + 更新/梳理） -->
+      <div class="card" style="margin-bottom:12px; padding:10px 14px">
+        <div style="display:flex; align-items:center; gap:8px">
+          <span style="color:var(--accent-deep); display:flex"><Icon name="globe" :size="16" /></span>
+          <div class="detail-text" style="flex:1; margin:0">
+            {{ overview?.summary || '还没有世界观总览 —— 点「梳理」让 AI 提炼一卷' }}
+          </div>
+          <button class="btn btn-warm btn-sm" :disabled="chat.organizing" @click="refreshWorld" title="同步最新设定">
+            <Icon name="refresh" :size="13" />
           </button>
           <button class="btn btn-soft btn-sm" :disabled="chat.organizing" @click="doOverview">
-            {{ overview ? '重新梳理' : '梳理' }}
+            {{ overview ? '梳理' : '梳理' }}
           </button>
         </div>
-        <div v-if="staleOverview" class="list-sub" style="margin-bottom:6px; color:var(--warm)">
-          有新内容未梳理 —— 点「重新梳理」更新总览
+        <div v-if="staleOverview" class="list-sub" style="margin-top:6px; color:var(--warm)">
+          有新内容未梳理 —— 点「梳理」更新总览
         </div>
-        <template v-if="overview">
-          <div class="detail-text">{{ overview.summary }}</div>
-          <div v-for="b in overview.blocks" :key="b.category" class="world-block">
-            <b><Icon name="globe" :size="14" /> {{ b.category }}</b>
-            <div class="detail-text" style="margin:2px 0">{{ b.content }}</div>
-            <div v-if="relatedEntriesOf(b.related).length">
-              <div v-for="(e, i) in relatedEntriesOf(b.related)" :key="i" class="list-sub">
-                · {{ e.key || '常驻' }}：{{ e.content.slice(0, 50) }}{{ e.content.length > 50 ? '…' : '' }}
-              </div>
-            </div>
+      </div>
+
+      <!-- 设定类别卡 -->
+      <div v-if="!worldGroups.length" class="empty-hint">
+        还没有已确认的设定<br />确认上方临时区的内容，或点卡进详情新增
+      </div>
+      <div v-for="g in worldGroups" :key="g.category" class="card world-cat-card" @click="catDetail = g.category">
+        <div class="world-cat-head">
+          <div style="flex:1; min-width:0">
+            <b><Icon name="globe" :size="14" /> {{ g.category }}</b>
+            <span class="list-sub" style="margin-left:8px">{{ g.entries.length }} 条</span>
           </div>
-        </template>
-        <div v-else-if="activeWorldEntries().length" class="list-sub">
-          点「梳理」—— AI 会把世界书提炼成世界观介绍（不是抄条目）
+          <button class="btn btn-ghost btn-sm" @click.stop="beginRenameCat(g.category)" title="重命名类别">
+            <Icon name="pencil" :size="13" />
+          </button>
+          <button class="btn btn-danger btn-sm" @click.stop="deleteCategory(g.category)" title="删除整卡">
+            <Icon name="trash" :size="13" />
+          </button>
+          <span class="collapse-arrow"><Icon name="chevronDown" :size="12" /></span>
         </div>
-        <div v-else class="list-sub">
-          先把条目确认进世界书（见上方临时区），AI 就能为你梳理世界观
+        <div class="list-sub" style="margin-top:4px">{{ catSummary(g.category) }}</div>
+      </div>
+      <div class="list-sub" style="text-align:center; margin:4px 0 8px">点类别卡查看/编辑内容 · 想自建类别？到「配置 → 世界书 → ＋ 条目」里选「新建类别」</div>
+    </div>
+
+    <!-- 类别卡详情（全屏） -->
+    <div v-if="catDetail" class="modal-full">
+      <div style="display:flex; align-items:center; gap:8px; max-width:640px; margin:0 auto">
+        <span style="color:var(--accent-deep); display:flex"><Icon name="globe" :size="18" /></span>
+        <div style="flex:1">
+          <div style="font-size:18px; font-weight:700">{{ catDetail }}</div>
+          <div class="list-sub">{{ catEntries.length }} 条设定</div>
+        </div>
+        <button class="btn btn-warm btn-sm" @click="openNewEntryIn(catDetail)">＋ 新增条目</button>
+        <button class="btn btn-ghost btn-sm" @click="catDetail = null"><Icon name="xmark" :size="14" /></button>
+      </div>
+      <div class="card" style="max-width:640px; margin:12px auto 0">
+        <div v-if="!catEntries.length" class="empty-hint">这个类别还是空的 —— 点右上角新增</div>
+        <div v-for="e in catEntries" :key="e.id" class="entry-item">
+          <span class="entry-tag" :class="e.key ? 'tag-trigger' : 'tag-constant'" :style="!e.enabled ? 'opacity:.45' : ''">
+            {{ !e.enabled ? '停用' : (e.key ? e.key.split(/[,，]/)[0].slice(0, 8) : '常驻') }}
+          </span>
+          <div style="flex:1; min-width:0">
+            <div class="list-sub" style="white-space:pre-wrap; font-size:13px; color:var(--ink)">{{ e.content }}</div>
+          </div>
+          <button class="btn btn-ghost btn-sm" :title="e.enabled ? '停用' : '启用'" @click="toggleEntryEnabled(e)">{{ e.enabled ? '停' : '启' }}</button>
+          <button class="btn btn-ghost btn-sm" @click="openEdit(e)">编</button>
+          <button class="btn btn-danger btn-sm" @click="removeEntry(e)">删</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 类别重命名弹层 -->
+    <div v-if="editCat" class="modal-mask" @click.self="editCat = false">
+      <div class="modal-sheet">
+        <div class="modal-title">重命名类别</div>
+        <div class="field">
+          <label>新类别名（原有条目全部并入）</label>
+          <input v-model="editCatName" placeholder="如：饮食文化" />
+        </div>
+        <div style="display:flex; gap:10px">
+          <button class="btn btn-ghost" style="flex:1" @click="editCat = false">取消</button>
+          <button class="btn btn-primary" style="flex:2" @click="catDetail ? renameCategory(catDetail) : (editCat = false)">保存</button>
         </div>
       </div>
     </div>
@@ -758,9 +872,11 @@ function showToast(msg: string) {
         </div>
         <div class="field">
           <label>世界类别</label>
-          <select v-model="editEntry.category">
+          <select v-model="catSel">
             <option v-for="c in CATEGORIES" :key="c" :value="c">{{ c }}</option>
+            <option value="__new__">＋ 新建类别…</option>
           </select>
+          <input v-if="catSel === '__new__'" v-model="catNewName" placeholder="新类别名，如：饮食文化" style="margin-top:6px" />
         </div>
         <div class="field" style="display:flex; align-items:center; gap:8px">
           <input type="checkbox" v-model="editEntry.enabled" style="width:auto" />

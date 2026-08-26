@@ -8,6 +8,10 @@ import { extractJson } from './extractor'
 /** 协议块载荷（宽松结构，按 op 取字段） */
 export interface OpBlock {
   op: string
+  /** 条目编号引用（参考清单【n】）；App 提交时解析为 entryId */
+  ref?: number
+  /** 已解析的条目 id（提交时写入，执行用） */
+  entryId?: number
   key?: string          // entry.* 触发词
   content?: string      // entry 内容 / char 描述
   category?: string     // 世界类别
@@ -69,6 +73,22 @@ export function opGroupLabel(kind: string): string {
     case 'attr': return '属性'
     default: return '操作'
   }
+}
+
+/**
+ * 把 AI 块里的 ref（参考清单编号）就地解析成 entryId。
+ * refs：AI 提交时点构建的参考清单 [{seq, entryId}]（与 buildTalkSystem 编号一致）。
+ * 解析失败的块（ref 越界等）保留原样（执行时回退 key 匹配，失败则提示）。
+ */
+export function resolveRefs(ops: OpBlock[], refs: Array<{ seq: number; entryId: number }>): OpBlock[] {
+  const map = new Map<number, number>()
+  for (const r of refs) map.set(r.seq, r.entryId)
+  return ops.map((o) => {
+    if (typeof o.ref === 'number' && map.has(o.ref)) {
+      return { ...o, entryId: map.get(o.ref), ref: undefined }
+    }
+    return o
+  })
 }
 
 /** 操作标题（一行动态描述） */

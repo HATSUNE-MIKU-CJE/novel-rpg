@@ -239,12 +239,19 @@ check('丢弃后临时区再减 1', (await pendingCount()) === beforeP - 2)
 
 // 世界观梳理（AI 归纳，不是条目抄录）
 console.log('【世界观梳理】')
-check('更新按钮存在', await page.getByRole('button', { name: /^更新$/ }).count() > 0)
+check('更新按钮存在', await page.getByTitle('同步最新设定').count() > 0)
 await page.getByRole('button', { name: /^梳理$/ }).click()
 await page.waitForTimeout(3000)
 check('梳理摘要出现', await page.getByText('铁炉堡的清晨').count() > 0)
-check('分类归纳出现', await page.getByText('东境狼群出没').count() > 0)
-check('相关条目链接', await page.getByText('铁炉堡：铁炉堡东境出现狼群').count() > 0)
+check('类别卡概括出现', await page.getByText('东境狼群出没').count() > 0)
+check('类别卡存在（地理环境）', await page.getByText('地理环境', { exact: true }).count() > 0)
+await page.locator('.world-cat-card', { hasText: '地理环境' }).click()
+await page.waitForTimeout(400)
+check('类别卡详情打开（条目全文）', await page.getByText('铁炉堡东境出现狼群').count() > 0)
+check('详情内可编辑/删除', await page.getByRole('button', { name: /^编$/ }).count() > 0)
+check('详情内可新增条目', await page.getByRole('button', { name: /新增条目/ }).count() > 0)
+await page.locator('.modal-full > div').first().locator('button').last().click()
+await page.waitForTimeout(300)
 
 // 属性建议（AI 按交流内容）
 console.log('【属性建议】')
