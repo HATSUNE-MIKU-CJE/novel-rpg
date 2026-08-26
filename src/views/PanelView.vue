@@ -219,6 +219,20 @@ async function saveEntry() {
   if (isNew) await refreshChars()
 }
 
+/** 快捷停用/启用条目 */
+async function toggleEntryEnabled(e: Entry) {
+  await ds.saveEntry({ ...e, enabled: e.enabled ? 0 : 1, updatedAt: Date.now() })
+  await refreshPending()
+}
+
+/** 删除条目 */
+async function removeEntry(e: Entry) {
+  if (!e.id) return
+  if (!confirm(`删除条目「${e.key || '常驻'}」？删除后不可恢复。`)) return
+  await ds.deleteEntry(e.id)
+  await refreshPending()
+}
+
 async function saveWb() {
   if (!editWb.value) return
   await ds.saveWorldbook({
@@ -547,8 +561,8 @@ function showToast(msg: string) {
             </div>
             <div v-if="!entriesOfWb(wb.id!).length" class="list-sub">空</div>
             <div v-for="e in entriesOfWb(wb.id!).filter(x => x.status !== 'rejected')" :key="e.id" class="entry-item">
-              <span class="entry-tag" :class="e.key ? 'tag-trigger' : 'tag-constant'">
-                {{ e.status === 'pending' ? '待审' : (e.key ? '触发' : '常驻') }}
+              <span class="entry-tag" :class="e.key ? 'tag-trigger' : 'tag-constant'" :style="!e.enabled ? 'opacity:.45' : ''">
+                {{ !e.enabled ? '停用' : (e.status === 'pending' ? '待审' : (e.key ? '触发' : '常驻')) }}
               </span>
               <div style="flex:1; min-width:0">
                 <div class="list-title" style="font-size:13px">{{ e.key || '—' }}</div>
@@ -556,7 +570,11 @@ function showToast(msg: string) {
                   {{ e.content }}
                 </div>
               </div>
+              <button class="btn btn-ghost btn-sm" :title="e.enabled ? '停用（不再注入）' : '重新启用'" @click="toggleEntryEnabled(e)">
+                {{ e.enabled ? '停用' : '启用' }}
+              </button>
               <button class="btn btn-ghost btn-sm" @click="openEdit(e)">编</button>
+              <button class="btn btn-danger btn-sm" @click="removeEntry(e)">删</button>
             </div>
             <button class="btn btn-soft btn-sm" style="margin-top: 8px"
               @click="openEdit({ worldbookId: wb.id!, source: 'manual', enabled: 1, createdAt: 0, updatedAt: 0, key: '', content: '' } as Entry)"
@@ -653,6 +671,7 @@ function showToast(msg: string) {
           <label style="margin:0">启用</label>
         </div>
         <div style="display:flex; gap:10px">
+          <button v-if="editEntry.id" class="btn btn-danger" style="flex:1" @click="removeEntry(editEntry); showEntryEditor = false; editEntry = null">删</button>
           <button class="btn btn-ghost" style="flex:1" @click="showEntryEditor = false">取消</button>
           <button class="btn btn-primary" style="flex:2" @click="saveEntry">
             {{ editEntry.status === 'pending' ? '确认并写入世界书' : '保存' }}
