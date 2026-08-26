@@ -4,6 +4,7 @@ import { Capacitor } from '@capacitor/core'
 import { StatusBar } from '@capacitor/status-bar'
 import { useDataStore } from './stores/data'
 import { useChatStore } from './stores/chat'
+import { initKeyboardHeight } from './engine/keyboard'
 import ChatView from './views/ChatView.vue'
 import PanelView from './views/PanelView.vue'
 import SettingsView from './views/SettingsView.vue'
@@ -47,6 +48,8 @@ function showToast(msg: string) {
 defineExpose({ showToast })
 
 onMounted(async () => {
+  // 键盘高度全局跟踪（--kb-h CSS 变量，输入框/底部导航避让）
+  await initKeyboardHeight()
   // 原生端：WebView 不延伸到系统状态栏之下（避免顶栏与时间栏重叠）
   if (Capacitor.isNativePlatform()) {
     try {

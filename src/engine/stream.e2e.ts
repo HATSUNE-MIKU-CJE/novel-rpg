@@ -2,8 +2,9 @@
  * v1.2/1.3 双流与属性体系纯函数测试：属性合并 / 属性清洗 / schema 解析。
  *   npx tsx src/engine/stream.e2e.ts
  */
-import { mergeAttrs, sanitizeResult, extractJson, makeSystemPrompt, parseAttrSchema, normCategory } from './extractor'
+import { mergeAttrs, sanitizeResult, extractJson, makeSystemPrompt, parseAttrSchema, normCategory, applyRenames } from './extractor'
 import type { ExtractResult } from './extractor'
+import type { Character, Relation } from '../types'
 
 let pass = 0, fail = 0
 function check(name: string, cond: boolean, detail?: string) {
@@ -48,6 +49,48 @@ const sp = makeSystemPrompt(['力量', '敏捷'], '境界')
 check('提示词含维度', sp.includes('「力量、敏捷」') && sp.includes('境界'))
 const sp2 = makeSystemPrompt([], '')
 check('无维度 → 自由命名提示', sp2.includes('自由命名') && !sp2.includes('realm'))
+check('提示词含改名规则', sp.includes('renames'))
+
+console.log('【renames 清洗】')
+const rp = sanitizeResult(extractJson<ExtractResult>('{"renames":[{"from":" 爱丽丝 ","to":"艾莉丝"},{"from":"","to":"乙"},{"from":"丙","to":"丙"},{"from":"丁","to":"戊"}]}')!)
+check('改名清洗（去空/去自反/去空白）', rp.renames.length === 2 && rp.renames[0].from === '爱丽丝' && rp.renames[0].to === '艾莉丝', JSON.stringify(rp.renames))
+
+console.log('【角色改名 applyRenames】')
+function mkChar(name: string, extra: Partial<Character> = {}): Character {
+  return { id: name.length, campaignId: 1, name, source: 'ai', createdAt: 0, updatedAt: 0, ...extra }
+}
+function mkRel(fromChar: string, toChar: string, relType = '同伴'): Relation {
+  return { campaignId: 1, fromChar, toChar, relType, createdAt: 0 }
+}
+{
+  const chars = [mkChar('爱丽丝', { identity: '见习法师', description: '银发少女', attributesJson: '[{"label":"智力","value":8}]' })]
+  const rels = [mkRel('爱丽丝', '铁锤'), mkRel('铁锤', '爱丽丝', '师徒')]
+  const r = applyRenames(chars, rels, [{ from: '爱丽丝', to: '艾莉丝' }])
+  check('旧卡改名（信息保留）', chars[0].name === '艾莉丝' && chars[0].identity === '见习法师' && !!chars[0].attributesJson?.includes('智力'))
+  check('关系两端迁移', rels[0].fromChar === '艾莉丝' && rels[1].toChar === '艾莉丝')
+  check('变更清单完整', r.changedChars.length === 1 && r.changedRels.length === 2 && r.deletedChars.length === 0)
+}
+{
+  const chars = [mkChar('爱丽丝'), mkChar('艾莉丝', { identity: '见习法师' })]
+  const rels = [mkRel('爱丽丝', '铁锤')]
+  const r = applyRenames(chars, rels, [{ from: '爱丽丝', to: '艾莉丝' }])
+  check('重复卡合并（删旧）', chars.length === 1 && chars[0].name === '艾莉丝')
+  check('新卡补身份', chars[0].identity === '见习法师')
+  check('合并清单（删 1 改 0）', r.deletedChars.length === 1 && r.changedChars.length === 0)
+  check('关系迁移到新名', rels[0].fromChar === '艾莉丝')
+}
+{
+  const chars = [mkChar('铁锤')]
+  const rels: Relation[] = []
+  const r = applyRenames(chars, rels, [{ from: '不存在', to: '某人' }])
+  check('未知旧名忽略', chars.length === 1 && r.changedChars.length === 0)
+}
+{
+  const chars = [mkChar('A')]
+  const rels: Relation[] = []
+  applyRenames(chars, rels, [{ from: 'A', to: 'B' }, { from: 'B', to: 'C' }])
+  check('链式改名生效', chars[0].name === 'C')
+}
 
 console.log(`\n结果：${pass} 通过 / ${fail} 失败`)
 process.exit(fail ? 1 : 0)

@@ -8,7 +8,7 @@ import { parseDreamPlot } from '../engine/dreamParser'
 import { buildDreamPromptBlocks, defaultDreamConfig, TALK_SYSTEM, type DreamConfig } from '../engine/dreamPreset'
 import { parseUsage, estimateCostYuan } from '../engine/pricing'
 import {
-  extractFacts, extractJson, mergeAttrs,
+  extractFacts, extractJson, mergeAttrs, applyRenames,
   parseAttrSchema, attrSchemaJson, type AttrSchema,
 } from '../engine/extractor'
 import { httpFetch } from '../engine/http'
@@ -603,9 +603,19 @@ export const useChatStore = defineStore('chat', {
           realmLabel: schema.realmLabel ?? '',
         })
 
+        // 0. 角色改名/合并：先把旧卡名更正（关系两端同步迁移），后续写入按新名匹配
+        if ((result.renames ?? []).length) {
+          const rm = applyRenames(chars, rels, result.renames)
+          for (const c of rm.changedChars) await db.characters.put(plainMsg(c))
+          for (const r of rm.changedRels) await db.relations.put(plainMsg(r))
+          for (const d of rm.deletedChars) if (d.id) await db.characters.delete(d.id)
+        }
+
         // 3. 写角色（按名字增量更新，属性合并；属性只保留存档维度）
         let newChars = 0, updChars = 0
         for (const c of result.characters) {
+          // 改名后旧名条目丢弃（AI 应只用新名输出）
+          if ((result.renames ?? []).some((r) => r.from === c.name)) continue
           const exist = chars.find((x) => x.name === c.name)
           const dimAttrs = (c.attributes ?? []).filter((a) => dimLabels.includes(a.label))
           const attrsJson = mergeAttrs(exist?.attributesJson, dimAttrs)

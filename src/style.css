@@ -120,7 +120,7 @@ textarea { resize: vertical; min-height: 60px; }
 
 /* ---------- 底部 TabBar ---------- */
 .tabbar {
-  position: fixed; left: 0; right: 0; bottom: 0;
+  position: fixed; left: 0; right: 0; bottom: var(--kb-h, 0px);
   display: flex;
   background: rgba(255,255,255,.94);
   backdrop-filter: blur(10px);
@@ -141,7 +141,7 @@ textarea { resize: vertical; min-height: 60px; }
   display: flex;
   flex-direction: column;
   height: calc(100vh - 60px - env(safe-area-inset-bottom, 0px));
-  height: calc(100dvh - 60px - env(safe-area-inset-bottom, 0px));
+  height: calc(100dvh - 60px - env(safe-area-inset-bottom, 0px) - var(--kb-h, 0px));
 }
 .chat-scroll {
   flex: 1;

@@ -8,7 +8,7 @@
  *   - facts      → 自动笔记簿条目（key 触发词 + content）
  */
 
-import type { ApiConfig } from '../types'
+import type { ApiConfig, Character, Relation } from '../types'
 import { chatCompletion } from './pipeline'
 
 export interface ExtractedCharacter {
@@ -35,11 +35,64 @@ export interface ExtractedFact {
   category?: string
 }
 
+/** v1.6：角色改名/合并（用户纠正名字时，不改旧卡而是合并） */
+export interface ExtractedRename {
+  from: string   // 旧名
+  to: string     // 新名
+}
+
 export interface ExtractResult {
   characters: ExtractedCharacter[]
   relations: ExtractedRelation[]
   facts: ExtractedFact[]
+  renames: ExtractedRename[]
   raw: string
+}
+
+/**
+ * 应用改名：同档角色卡改名/合并、关系两端同步迁移。
+ * 纯函数（就地修改传入数组），返回需要写库的变更清单。
+ */
+export function applyRenames(
+  chars: Character[],
+  rels: Relation[],
+  renames: ExtractedRename[] | undefined,
+): { changedChars: Character[]; changedRels: Relation[]; deletedChars: Character[] } {
+  const changedChars: Character[] = []
+  const changedRels: Relation[] = []
+  const deletedChars: Character[] = []
+  for (const rn of renames ?? []) {
+    const from = rn?.from?.trim(), to = rn?.to?.trim()
+    if (!from || !to || from === to) continue
+    const old = chars.find((c) => c.name === from)
+    if (!old) continue
+    const existing = chars.find((c) => c.name === to)
+    if (existing && existing !== old) {
+      // 目标已存在 → 合并（新卡补缺失字段，删旧卡）
+      let merged = false
+      if (!existing.identity && old.identity) { existing.identity = old.identity; merged = true }
+      if (!existing.description && old.description) { existing.description = old.description; merged = true }
+      if (!existing.attributesJson && old.attributesJson) { existing.attributesJson = old.attributesJson; merged = true }
+      if (!existing.realm && old.realm) { existing.realm = old.realm; merged = true }
+      if (merged) { existing.updatedAt = Date.now(); changedChars.push(existing) }
+      chars.splice(chars.indexOf(old), 1)
+      deletedChars.push(old)
+    } else if (existing === old) {
+      continue // 同名项，无需处理
+    } else {
+      old.name = to
+      old.updatedAt = Date.now()
+      changedChars.push(old)
+    }
+    // 关系两端迁移
+    for (const r of rels) {
+      let touched = false
+      if (r.fromChar === from) { r.fromChar = to; touched = true }
+      if (r.toChar === from) { r.toChar = to; touched = true }
+      if (touched && !changedRels.includes(r)) changedRels.push(r)
+    }
+  }
+  return { changedChars, changedRels, deletedChars }
 }
 
 /** v1.3 存档级属性体系（默认通用六维 + 境界标签） */
@@ -123,7 +176,8 @@ export function makeSystemPrompt(attrDims: string[], realmLabel: string): string
 {
   "characters": [{"name": "角色名", "identity": "身份/地位"${realmField}, "description": "一两句关键特征", "attributes": [{"label": "维度名", "value": 7}]}],
   "relations": [{"from": "甲", "to": "乙", "relType": "关系类型", "label": "简要描述"}],
-  "facts": [{"key": "触发词，多个用逗号分隔，可以为空表示常驻", "content": "一条事实，一句到两句", "category": "类别"}]
+  "facts": [{"key": "触发词，多个用逗号分隔，可以为空表示常驻", "content": "一条事实，一句到两句", "category": "类别"}],
+  "renames": [{"from": "已登记的旧名", "to": "对话中更正后的新名"}]
 }
 
 规则：
@@ -134,8 +188,9 @@ export function makeSystemPrompt(attrDims: string[], realmLabel: string): string
 5. relations：新出现或变化的关系（亲缘/敌友/恋人/师徒等）。
 6. facts：世界观设定、地点、物品、重要事件、剧情转折。一条事实一记，不要大段复制原文。category 只能从「${CATEGORIES.join('、')}」中选一个。
 7. 名字用对话中的原称。无法确定名字的次要角色不提取。
-8. 如果某类没有新内容，输出空数组。
-9. 全部用中文。`
+8. **renames（重要）**：对话中明确纠正或改称某个已登记角色（如「她其实叫艾莉丝，不是爱丽丝」「我们叫她小艾」）时，输出 renames 把旧名映射到新名；该角色的新信息一律用新名输出、不要再输出旧名条目。没有改名则输出空数组。
+9. 如果某类没有新内容，输出空数组。
+10. 全部用中文。`
 }
 
 /** 从模型输出中提取 JSON（容错：剥离代码块、找首尾大括号） */
@@ -192,6 +247,11 @@ export function sanitizeResult(parsed: Partial<ExtractResult>): ExtractResult {
             category: normCategory(f.category),
           }))
       : [],
+    renames: Array.isArray(parsed.renames)
+      ? parsed.renames
+          .filter(r => r?.from?.trim() && r?.to?.trim() && r.from !== r.to)
+          .map(r => ({ from: String(r.from).trim(), to: String(r.to).trim() }))
+      : [],
     raw: '',
   }
 }
@@ -213,7 +273,7 @@ export async function extractFacts(
 
   const parsed = extractJson<ExtractResult>(reply)
   if (!parsed) {
-    return { characters: [], relations: [], facts: [], raw: reply }
+    return { characters: [], relations: [], facts: [], renames: [], raw: reply }
   }
   return { ...sanitizeResult(parsed), raw: reply }
 }

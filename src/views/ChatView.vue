@@ -66,26 +66,11 @@ function fmtTokens(n?: number): string {
   return String(n)
 }
 
-// ---- 滚动（消息区独立滚动；键盘弹出时整体布局高度收缩，输入框不被盖住） ----
+// ---- 滚动（消息区独立滚动；键盘高度由 App.vue 全局管理 --kb-h，键盘弹出整体收缩） ----
 const listPad = ref(24)
-/** 键盘高度（visualViewport 与 innerHeight 的差；WebView 已自动 resize 则为 0） */
-const kbHeight = ref(0)
-const layoutStyle = computed(() => {
-  const kb = kbHeight.value
-  return kb > 0
-    ? { height: `calc(100dvh - 60px - env(safe-area-inset-bottom, 0px) - ${kb}px)` }
-    : undefined
-})
 function scrollBottom(smooth = true) {
   nextTick(() => listEl.value?.scrollTo({ top: listEl.value.scrollHeight, behavior: smooth ? 'smooth' : 'auto' }))
 }
-function onViewport() {
-  const vv = window.visualViewport
-  if (!vv) return
-  kbHeight.value = Math.max(0, window.innerHeight - vv.height)
-}
-onMounted(() => window.visualViewport?.addEventListener('resize', onViewport))
-onUnmounted(() => window.visualViewport?.removeEventListener('resize', onViewport))
 
 /** 点击选项 → 作为用户消息发送 */
 async function pickOption(opt: string) {
@@ -211,7 +196,7 @@ async function saveCharDetail(updated: Character) {
 </script>
 
 <template>
-  <div class="chat-layout" :style="layoutStyle">
+  <div class="chat-layout">
     <!-- 头部：存档切换 -->
     <header class="chat-header" @click="showCampaigns = true">
       <div style="font-size:18px">📖</div>
