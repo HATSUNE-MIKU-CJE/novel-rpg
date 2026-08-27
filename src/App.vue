@@ -70,12 +70,9 @@ onMounted(async () => {
 
 <template>
   <div style="min-height:100%">
-    <keep-alive>
-      <component
-        :is="tab === 'chat' ? ChatView : tab === 'panel' ? PanelView : SettingsView"
-        :key="tab"
-      />
-    </keep-alive>
+    <ChatView v-show="tab === 'chat'" />
+    <PanelView v-show="tab === 'panel'" />
+    <SettingsView v-show="tab === 'settings'" />
     <nav class="tabbar">
       <button class="tab" :class="{ active: tab === 'chat' }" @click="setTab('chat')">
         <span class="ico"><Icon name="chat" :size="20" /></span>对话

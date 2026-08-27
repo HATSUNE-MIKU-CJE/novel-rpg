@@ -131,6 +131,8 @@ async function refreshOps() {
     : []
 }
 watch(() => chat.currentCampaignId, refreshOps)
+// v-show 常驻下无重挂载：AI 提交操作（lastOpCount 变化）时刷新
+watch(() => chat.lastOpCount, () => refreshOps())
 onMounted(refreshOps)
 
 function opPayload(op: Op): OpBlock {
@@ -246,6 +248,25 @@ async function openNewEntryIn(cat: string) {
 /** 条目编辑器类别选择（支持新建类别） */
 const catSel = ref('其他')
 const catNewName = ref('')
+
+// ---- v1.8 血条设定（存档级） ----
+const barDraft = ref(chat.barSchema())
+function refreshBarDraft() { barDraft.value = JSON.parse(JSON.stringify(chat.barSchema())) }
+watch(() => chat.currentCampaignId, refreshBarDraft)
+onMounted(refreshBarDraft)
+function addBar() {
+  barDraft.value.bars.push({ id: `b${Date.now()}_${Math.random().toString(36).slice(2, 6)}`, name: '', color: '#98c379', max: 100, enabled: true })
+}
+function delBar(i: number) { barDraft.value.bars.splice(i, 1) }
+async function saveBars() {
+  const bars = barDraft.value.bars
+    .filter((b) => b.name.trim())
+    .map((b) => ({ ...b, name: b.name.trim(), max: Math.max(1, Number(b.max) || 100) }))
+  if (!bars.length) { showToast('至少保留一条状态条'); return }
+  await chat.saveBarSchema({ bars })
+  refreshBarDraft()
+  showToast('状态条已保存')
+}
 
 async function refreshPending() {
   const wb = notebook.value
@@ -602,6 +623,27 @@ function showToast(msg: string) {
         </div>
       </div>
 
+      <!-- 血条设定（存档级） -->
+      <div class="card" style="margin-bottom:12px">
+        <b style="margin-bottom:6px; display:block"><Icon name="sliders" :size="15" /> 血条设定（存档级）</b>
+        <div class="list-sub" style="margin-bottom:8px">
+          内置模板：血条（红）/ 蓝条（蓝）/ 经验（黄）。开启的条显示在角色页与游戏栏，AI 每轮自动报数更新；第一张角色卡为主角（状态条展示主角）。
+        </div>
+        <div v-for="(b, i) in barDraft.bars" :key="b.id" class="attr-edit-row">
+          <input type="color" v-model="b.color" style="width:36px; height:34px; padding:2px; flex-shrink:0" />
+          <input v-model="b.name" placeholder="条名" style="flex:1" />
+          <input v-model.number="b.max" type="number" min="1" max="9999" style="width:72px" placeholder="上限" />
+          <label style="display:flex; align-items:center; gap:3px; font-size:12px; white-space:nowrap">
+            <input type="checkbox" v-model="b.enabled" style="width:auto" /> 开
+          </label>
+          <button class="btn btn-danger btn-sm" @click="delBar(i)"><Icon name="xmark" :size="11" /></button>
+        </div>
+        <div style="display:flex; gap:8px; margin-top:6px">
+          <button class="btn btn-soft btn-sm" style="flex:1" @click="addBar">＋ 自定义条</button>
+          <button class="btn btn-primary btn-sm" style="flex:1" @click="saveBars">应用</button>
+        </div>
+      </div>
+
       <!-- 临时区：AI 新展开的信息 -->
       <div v-if="pendingEntries.length" class="card" style="margin-bottom:12px; border:1px solid var(--warm)">
         <div style="display:flex; align-items:center; margin-bottom:8px">
@@ -830,6 +872,7 @@ function showToast(msg: string) {
       v-if="charSheet"
       :character="charSheet"
       :schema="schema"
+      :bars="chat.barDefs()"
       @close="charSheet = null"
       @saved="onCharSaved"
     />

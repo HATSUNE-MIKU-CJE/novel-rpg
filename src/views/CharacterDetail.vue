@@ -4,13 +4,21 @@ import { db } from '../db'
 import RadarChart from './RadarChart.vue'
 import Icon from '../components/Icon.vue'
 import type { AttrSchema } from '../engine/extractor'
+import { readBarValues } from '../engine/bars'
+import type { BarDef } from '../engine/bars'
 import type { Character } from '../types'
 
-const props = defineProps<{ character: Character; schema: AttrSchema }>()
+const props = defineProps<{ character: Character; schema: AttrSchema; bars?: BarDef[] }>()
 const emit = defineEmits<{ close: []; saved: [Character] }>()
 
 const editing = ref(false)
 const draft = ref({ realm: '', description: '', attrs: [] as Array<{ label: string; value: number }> })
+
+/** 状态条数值 */
+const barMap = computed<Record<string, number>>(() => readBarValues(props.character.barValuesJson))
+const barEdit = reff(barMap.value)
+function reff(v: Record<string, number>) { return ref({ ...v }) }
+watch(() => props.character, (c) => { barEdit.value = { ...readBarValues(c.barValuesJson) } }, { immediate: true })
 
 /** 旧格式 attributesJson → Map(label → value) */
 function parseAttrs(json?: string): Map<string, number> {
@@ -92,6 +100,7 @@ async function save() {
   )
   const updated: Character = {
     ...c,
+    barValuesJson: JSON.stringify(barEdit.value),
     realm: draft.value.realm.trim() || undefined,
     description: draft.value.description.trim(),
     attributesJson: attrsJson,
@@ -125,17 +134,34 @@ async function save() {
       <label style="display:block; font-size:13px; font-weight:600; color:var(--ink-soft); margin-bottom:6px">
         🧭 能力雷达{{ realmLabel ? ` · ${realmLabel}` : '' }}
       </label>
-      <RadarChart :attrs="radarAttrs" />
+      <RadarChart :attrs="radarAttrs" :max="(schema.maxValue ?? 10)" />
       <div v-if="editing" class="attr-edit-list">
         <label style="font-size:13px; font-weight:600; color:var(--ink-soft); margin:8px 0 4px">数值（0-10）</label>
         <div v-for="a in draft.attrs" :key="a.label" class="attr-edit-row">
           <span style="flex:1; font-size:14px; font-weight:600">{{ a.label }}</span>
-          <input v-model.number="a.value" type="number" min="0" max="10" style="width:70px" />
+          <input v-model.number="a.value" type="number" min="0" :max="(schema.maxValue ?? 10)" style="width:70px" />
         </div>
         <div v-if="realmLabel" class="field" style="margin-top:10px">
           <label>{{ realmLabel }}</label>
           <input v-model="draft.realm" :placeholder="`如：金丹期 / 见习法师`" />
         </div>
+      </div>
+    </div>
+
+    <!-- 状态条 -->
+    <div v-if="(bars || []).length" class="card" style="max-width:640px; margin:12px auto 0">
+      <label style="display:flex; align-items:center; gap:5px; font-size:13px; font-weight:600; color:var(--ink-soft); margin-bottom:6px"><Icon name="sliders" :size="15" /> 状态条</label>
+      <div v-for="b in bars" :key="b.id" class="hud-row">
+        <span class="hud-name">{{ b.name }}</span>
+        <div class="bar-track" style="flex:1">
+          <div class="bar-fill" :style="{ width: Math.min(100, ((barMap[b.name] ?? 0) / b.max) * 100) + '%', background: b.color }"></div>
+        </div>
+        <input
+          v-if="editing"
+          v-model.number="barEdit[b.name]"
+          type="number" min="0" :max="b.max" style="width:70px"
+        />
+        <span v-else class="hud-val">{{ barMap[b.name] ?? 0 }}/{{ b.max }}</span>
       </div>
     </div>
 

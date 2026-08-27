@@ -95,10 +95,12 @@ export function applyRenames(
   return { changedChars, changedRels, deletedChars }
 }
 
-/** v1.3 存档级属性体系（默认通用六维 + 境界标签） */
+/** v1.3 存档级属性体系（默认通用六维 + 境界标签）；v1.8 支持自定义上限/维数 */
 export interface AttrSchema {
   dims: Array<{ label: string }>
   realmLabel?: string   // 空/缺省 = 不显示境界
+  /** v1.8 属性值上限（默认 10，1-100） */
+  maxValue?: number
 }
 
 export const DEFAULT_ATTR_SCHEMA: AttrSchema = {
@@ -107,6 +109,7 @@ export const DEFAULT_ATTR_SCHEMA: AttrSchema = {
     { label: '意志' }, { label: '感知' }, { label: '魅力' },
   ],
   realmLabel: '境界',
+  maxValue: 10,
 }
 
 /** 世界类别（板块分组）候选 */
@@ -117,15 +120,20 @@ export function parseAttrSchema(json?: string): AttrSchema {
   try {
     const p = JSON.parse(json) as AttrSchema
     const dims = Array.isArray(p.dims)
-      ? p.dims.filter((d) => d?.label?.trim()).slice(0, 10).map((d) => ({ label: String(d.label).trim() }))
+      ? p.dims.filter((d) => d?.label?.trim()).slice(0, 12).map((d) => ({ label: String(d.label).trim() }))
       : []
     if (!dims.length) return DEFAULT_ATTR_SCHEMA
-    return { dims, realmLabel: typeof p.realmLabel === 'string' ? p.realmLabel : DEFAULT_ATTR_SCHEMA.realmLabel }
+    const maxValue = Math.max(1, Math.min(100, Number(p.maxValue) || 10))
+    return {
+      dims,
+      realmLabel: typeof p.realmLabel === 'string' ? p.realmLabel : DEFAULT_ATTR_SCHEMA.realmLabel,
+      maxValue,
+    }
   } catch { return DEFAULT_ATTR_SCHEMA }
 }
 
 export function attrSchemaJson(s: AttrSchema): string {
-  return JSON.stringify({ dims: s.dims, realmLabel: s.realmLabel ?? '' })
+  return JSON.stringify({ dims: s.dims, realmLabel: s.realmLabel ?? '', maxValue: s.maxValue ?? 10 })
 }
 
 /** 已有实体清单（防重复） */

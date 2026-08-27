@@ -80,6 +80,8 @@ export interface Campaign {
   attrSchemaJson?: string
   /** v1.4：世界观总览（AI 梳理结果 WorldOverview JSON） */
   worldOverviewJson?: string
+  /** v1.8：状态条配置（BarSchema JSON：bars 模板列表） */
+  barSchemaJson?: string
   createdAt: number
   updatedAt: number
   lastActive: number
@@ -143,6 +145,8 @@ export interface Character {
   /** v1.3：境界/段位等（自由文本，AI 可从对话识别） */
   realm?: string
   attributesJson?: string
+  /** v1.8：状态条数值（JSON Record<条名, 数值>） */
+  barValuesJson?: string
   statusJson?: string
   description?: string
   source: 'manual' | 'ai'

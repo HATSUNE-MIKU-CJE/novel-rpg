@@ -51,7 +51,7 @@ const mock = createServer((req: IncomingMessage, res: ServerResponse) => {
         content = `好，${echoed.slice(0, 30)} —— 这个方向很有味道。我们先把世界观锚定：你想让铁炉堡处于什么时代？`
       }
     } else {
-      content = `<dream_plot>\n<dream_body>回应：「${echoed.slice(0, 40)}」</dream_body>\n<dream_after_format>\n<dream_done/>\n</dream_after_format>\n</dream_plot>`
+      content = `<dream_plot>\n<dream_body>回应：「${echoed.slice(0, 40)}」</dream_body>\n<dream_after_format>\n<dream_done/>\n</dream_after_format>\n</dream_plot>\n[[BAR]]{"name":"艾莉丝","values":{"血条":72}}[[/BAR]]`
     }
 
     res.setHeader('Content-Type', 'application/json')
@@ -171,6 +171,7 @@ check('游戏用户消息上屏', await page.getByText('我走到东门前，敲
 check('AI 回复上屏（XML 解析成正文）', await page.getByText(/回应：/).count() > 0)
 check('token 统计显示', await page.getByText(/共 3\.7k token/).count() > 0)
 check('金额折算显示', await page.getByText(/¥0\./).count() > 0)
+check('状态条 HUD 出现（AI 报数 72/100）', await page.getByText('72/100').count() > 0)
 
 // ---- 6.3 消息长按操作 ----
 console.log('【消息长按】')
@@ -242,6 +243,7 @@ console.log('【世界 tab】')
 await page.getByRole('button', { name: /^世界$/ }).click()
 await page.waitForTimeout(400)
 check('属性设定卡出现', await page.getByText('属性设定').count() > 0)
+check('血条设定卡出现', await page.getByText('血条设定').count() > 0)
 check('默认六维展示', await page.getByText('力量', { exact: true }).count() > 0)
 
 async function pendingCount(): Promise<number> {

@@ -2,7 +2,7 @@
  * v1.5 AI 操作协议解析测试。
  *   npx tsx src/engine/ops.e2e.ts
  */
-import { parseOps, opGroup, opGroupLabel, opTitle, resolveRefs } from './ops'
+import { parseOps, opGroup, opGroupLabel, opTitle, resolveRefs, parseBars } from './ops'
 
 let pass = 0, fail = 0
 function check(name: string, cond: boolean, detail?: string) {
@@ -51,6 +51,15 @@ check('ref 解析成 entryId', rr[0].entryId === 101 && rr[0].ref === undefined)
 check('多字段保留', rr[1].entryId === 102 && rr[1].content === '新内容')
 check('越界 ref 原样保留', rr[2].ref === 99 && rr[2].entryId === undefined)
 check('无 ref 不动', rr[3].entryId === undefined)
+
+console.log('【parseBars 直通块】')
+const pb = parseBars('战斗结束。\n[[BAR]]{"name":"艾莉丝","values":{"血条":72,"蓝条":30}}[[/BAR]]')
+check('BAR 块剥除', pb.clean === '战斗结束。')
+check('数值解析', pb.updates.length === 1 && pb.updates[0].values['血条'] === 72)
+const pb2 = parseBars('[[BAR]]{"values":{"血条":"bad"}}[[/BAR]]x')
+check('坏值忽略', pb2.updates.length === 0)
+const pb3 = parseBars('无块')
+check('无块 → 原样', pb3.clean === '无块' && pb3.updates.length === 0)
 
 console.log(`\n结果：${pass} 通过 / ${fail} 失败`)
 process.exit(fail ? 1 : 0)

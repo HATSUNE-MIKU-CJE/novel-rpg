@@ -138,6 +138,7 @@ textarea { resize: vertical; min-height: 60px; }
 /* ---------- 对话页 ---------- */
 /* v1.3 内部固定布局：顶部/选项/输入都是普通块，仅消息区滚动（根治黏不住/漏头） */
 .chat-layout {
+  position: relative;
   display: flex;
   flex-direction: column;
   height: calc(100vh - 60px - env(safe-area-inset-bottom, 0px));
@@ -384,18 +385,36 @@ html[data-theme='dark'] .chat-inputbar { background: rgba(22,21,28,.96); }
 .collapse-arrow { font-size: 12px; color: var(--ink-soft); }
 
 
+
+/* v1.8 状态条 HUD */
+.hud-bars {
+  background: var(--accent-soft);
+  border-radius: var(--radius);
+  padding: 10px 14px;
+  margin: 10px 0;
+  box-shadow: var(--shadow);
+}
+.hud-hero { font-size: 13px; font-weight: 700; color: var(--accent-deep); margin-bottom: 4px; }
+.hud-row { display: flex; align-items: center; gap: 8px; padding: 3px 0; }
+.hud-name { font-size: 12px; color: var(--ink-soft); min-width: 36px; }
+.hud-val { font-size: 12px; color: var(--ink-soft); min-width: 58px; text-align: right; }
+.bar-track {
+  height: 8px;
+  border-radius: 6px;
+  background: var(--bg-deep);
+  overflow: hidden;
+}
+.bar-fill { height: 100%; border-radius: 6px; transition: width .4s ease; }
+
 /* v1.7 直达顶/底悬浮键 */
 .scroll-fabs {
-  position: sticky;
-  bottom: 8px;
+  position: absolute;
+  right: 12px;
+  bottom: 96px;
   display: flex;
   flex-direction: column;
   gap: 8px;
-  align-items: flex-end;
-  margin-top: -96px;
-  height: 0;
-  z-index: 5;
-  pointer-events: none;
+  z-index: 30;
 }
 .fab {
   pointer-events: auto;

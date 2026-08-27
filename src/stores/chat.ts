@@ -11,7 +11,8 @@ import {
   extractFacts, extractJson, mergeAttrs, applyRenames, normCategory,
   parseAttrSchema, attrSchemaJson, type AttrSchema,
 } from '../engine/extractor'
-import { parseOps, opGroup, resolveRefs, type OpBlock } from '../engine/ops'
+import { parseOps, opGroup, resolveRefs, parseBars, type OpBlock } from '../engine/ops'
+import { parseBarSchema, barSchemaJson, readBarValues, writeBarValues, type BarSchema, type BarDef } from '../engine/bars'
 import { httpFetch } from '../engine/http'
 import type { WorldOverview, Entry as EntryType } from '../types'
 
@@ -187,6 +188,21 @@ export const useChatStore = defineStore('chat', {
       return parseAttrSchema(this.currentCampaign?.attrSchemaJson)
     },
 
+    /** v1.8：状态条配置（存档级） */
+    barSchema(): BarSchema {
+      return parseBarSchema(this.currentCampaign?.barSchemaJson)
+    },
+    async saveBarSchema(s: BarSchema) {
+      const c = this.currentCampaign
+      if (!c) return
+      c.barSchemaJson = barSchemaJson(s)
+      await useDataStore().saveCampaign(c)
+    },
+    /** 启用的条定义 */
+    barDefs(): BarDef[] {
+      return this.barSchema().bars.filter((b) => b.enabled)
+    },
+
     /** v1.3：保存属性体系 */
     async saveAttrSchema(s: AttrSchema) {
       const c = this.currentCampaign
@@ -288,10 +304,17 @@ export const useChatStore = defineStore('chat', {
       if (c?.id) {
         const entries = await activeTalkEntries(c)
         const lines = entries.map((e, i) => `【${i + 1}】${e.category || '其他'}·${e.key || '常驻'}：${e.content}`)
-        const charText = await this.charCardsText()
+        const chars = await db.characters.where('campaignId').equals(c.id!).toArray()
+        const charText = chars.map((ch) => `【角色卡 · ${ch.name}】${ch.identity ? ch.identity + '。' : ''}${ch.description ?? ''}`.trim()).join('\n')
         if (charText) lines.push(charText)
         const schema = this.attrSchema()
-        lines.push(`【当前属性体系】${schema.dims.map((d) => d.label).join('、')}${schema.realmLabel ? `（${schema.realmLabel}）` : ''}`)
+        lines.push(`【当前属性体系】${schema.dims.map((d) => d.label).join('、')}${schema.realmLabel ? `（${schema.realmLabel}）` : ''}（上限 ${schema.maxValue ?? 10}）`)
+        const barDefs = this.barSchema().bars.filter((b) => b.enabled)
+        if (barDefs.length) {
+          const hero = chars[0]
+          const heroVals = hero ? readBarValues(hero.barValuesJson) : {}
+          lines.push(`【当前状态条】${barDefs.map((b) => `${b.name}（${heroVals[b.name] ?? b.max}/${b.max}）`).join('、')}；主角为第一张角色卡「${hero?.name ?? '（未建角）'}」`)
+        }
         if (lines.length) parts.push(`【当前已生效的设定参考】\n${lines.join('\n').slice(0, 8000)}`)
       }
       return parts.join('\n\n')
@@ -423,6 +446,14 @@ export const useChatStore = defineStore('chat', {
     /** 游戏流请求：完整预设链 + 世界书注入 + 变量宏 */
     async requestGame(campaign: Campaign, api: ApiConfig) {
       const prompts = await this.resolveGamePrompts()
+      // v1.8 状态条协议（启用条时追加，AI 每轮末报数）
+      const barDefs = this.barDefs()
+      if (barDefs.length) {
+        prompts.push({
+          name: '状态条协议', role: 'system', enabled: true,
+          content: `【状态条协议】本存档开启状态条（${barDefs.map((b) => b.name).join('、')}，上限各自定义，默认 100）。每轮回复末尾，若主角（第一张角色卡）状态发生变化，输出块 [[BAR]]{"name":"主角名","values":{"血条":62}}[[/BAR]]；无变化则省略。数值=当前剩余值，出负数按 0、超上限按上限。`,
+        })
+      }
 
       const bindings = await db.campaignBindings.where('campaignId').equals(this.currentCampaignId).toArray()
       const wbIds = bindings.map((b) => b.worldbookId)
@@ -501,8 +532,14 @@ export const useChatStore = defineStore('chat', {
         const cost = usage && estimateCostYuan(api.model, usage, new Date())
         const costYuan = cost?.costYuan
 
-        // v1.5：交流流解析 AI 操作块 → 临时区审计；ref 编号就地解析为 entryId
+        // v1.8：游戏流解析状态条直通块（直接生效）
         let content = reply.content
+        if (stream === 'game') {
+          const bars = parseBars(reply.content)
+          content = bars.clean
+          if (bars.updates.length) await this.applyBarUpdates(bars.updates)
+        }
+        // v1.5：交流流解析 AI 操作块 → 临时区审计；ref 编号就地解析为 entryId
         let opCount = 0
         if (stream === 'talk') {
           const r = parseOps(reply.content)
@@ -605,6 +642,26 @@ export const useChatStore = defineStore('chat', {
         if (await this.executeOp(op.id!)) done++
       }
       return done
+    },
+
+    /** v1.8：状态条直通更新（游戏流 [[BAR]] 直接生效） */
+    async applyBarUpdates(updates: Array<{ name?: string; values: Record<string, number> }>) {
+      const defs = this.barDefs()
+      if (!defs.length) return
+      const cid = this.currentCampaignId
+      if (!cid) return
+      const chars = await db.characters.where('campaignId').equals(cid).toArray()
+      for (const u of updates) {
+        const target = (u.name && chars.find((c) => c.name === u.name)) ?? chars[0]
+        if (!target) continue
+        const cur = readBarValues(target.barValuesJson)
+        for (const [k, v] of Object.entries(u.values)) {
+          if (defs.some((d) => d.name === k)) cur[k] = v
+        }
+        target.barValuesJson = writeBarValues(cur, defs)
+        target.updatedAt = Date.now()
+        await db.characters.put(plainMsg(target))
+      }
     },
 
     /** 执行操作主逻辑（确认时调用） */
@@ -713,6 +770,21 @@ export const useChatStore = defineStore('chat', {
             const exist = rels.find((r) => r.fromChar === p.from && r.toChar === p.to && r.relType === p.relType)
             if (exist?.id) { await db.relations.delete(exist.id); return true }
             return false
+          }
+          case 'bar.config': {
+            const cur = this.barSchema()
+            const defs = (p.bars ?? [])
+              .filter((b) => b?.name?.trim())
+              .map((b) => ({
+                id: cur.bars.find((x) => x.name === b.name)?.id ?? `b${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+                name: b.name.trim(),
+                color: /^#[0-9a-fA-F]{3,8}$/.test(b.color ?? '') ? b.color! : '#e06c75',
+                max: Math.max(1, Number(b.max) || 100),
+                enabled: b.enabled !== false,
+              }))
+            if (!defs.length) return false
+            await this.saveBarSchema({ bars: defs.slice(0, 12) })
+            return true
           }
           case 'schema.propose': {
             const dims = (p.dims ?? []).filter((d) => d?.label?.trim()).map((d) => ({ label: d.label.trim() }))

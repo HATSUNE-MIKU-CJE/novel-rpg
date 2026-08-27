@@ -2,6 +2,7 @@
 import { ref, computed, nextTick, watch, onMounted, onUnmounted } from 'vue'
 import { db } from '../db'
 import { useDataStore } from '../stores/data'
+import { readBarValues } from '../engine/bars'
 import { useChatStore, type StartGamePack } from '../stores/chat'
 import CharacterDetail from './CharacterDetail.vue'
 import Icon from '../components/Icon.vue'
@@ -123,6 +124,27 @@ async function copyMsg() {
     showToast('复制失败')
   }
 }
+
+// ---- 主角状态条（HUD，仅游戏栏展示） ----
+const heroState = ref<{ name: string; bars: Array<{ name: string; color: string; value: number; max: number }> } | null>(null)
+async function refreshHeroBars() {
+  const cid = chat.currentCampaignId
+  if (!cid || chat.currentStream !== 'game') { heroState.value = null; return }
+  const defs = chat.barDefs()
+  if (!defs.length) { heroState.value = null; return }
+  const chars = await db.characters.where('campaignId').equals(cid).toArray()
+  const hero = chars[0]
+  if (!hero) { heroState.value = null; return }
+  const vals = readBarValues(hero.barValuesJson)
+  heroState.value = {
+    name: hero.name,
+    bars: defs.map((d) => ({ name: d.name, color: d.color, max: d.max, value: vals[d.name] ?? d.max })),
+  }
+}
+watch(() => chat.messages.length, refreshHeroBars)
+watch(() => chat.currentStream, refreshHeroBars)
+watch(() => chat.currentCampaignId, refreshHeroBars)
+onMounted(refreshHeroBars)
 
 /** 点击选项 → 作为用户消息发送 */
 async function pickOption(opt: string) {
@@ -321,6 +343,18 @@ async function saveCharDetail(updated: Character) {
 
     <!-- 消息流 -->
     <div ref="listEl" class="chat-scroll" :style="{ paddingBottom: listPad + 'px' }" v-if="chat.currentCampaignId">
+      <!-- 主角状态条（游戏栏 HUD） -->
+      <div v-if="chat.currentStream === 'game' && heroState" class="hud-bars">
+        <div class="hud-hero">{{ heroState.name }}</div>
+        <div v-for="b in heroState.bars" :key="b.name" class="hud-row">
+          <span class="hud-name">{{ b.name }}</span>
+          <div class="bar-track" style="flex:1">
+            <div class="bar-fill" :style="{ width: Math.min(100, (b.value / b.max) * 100) + '%', background: b.color }"></div>
+          </div>
+          <span class="hud-val">{{ b.value }}/{{ b.max }}</span>
+        </div>
+      </div>
+
       <!-- 游戏栏 · 未开始：开始游戏入口 -->
       <div v-if="chat.currentStream === 'game' && !chat.inGame" class="start-gate card">
         <div style="text-align:center; margin-top:8px; color:var(--accent)"><Icon name="gamepad" :size="40" /></div>
@@ -419,11 +453,7 @@ async function saveCharDetail(updated: Character) {
         </div>
         <div v-if="chat.error" class="msg-error">⚠️ {{ chat.error }}</div>
 
-        <!-- 直达顶/底 -->
-        <div class="scroll-fabs">
-          <button class="fab" title="回到顶部" @click="scrollTop"><Icon name="chevronUp" :size="16" /></button>
-          <button class="fab" title="回到底部" @click="scrollBottom()"><Icon name="chevronDown" :size="16" /></button>
-        </div>
+
       </template>
     </div>
 
@@ -432,6 +462,12 @@ async function saveCharDetail(updated: Character) {
         还没有存档<br />
         点上方「＋ 新档」开始你的第一个梦境
       </div>
+    </div>
+
+    <!-- 直达顶/底（布局层右下角，不随滚动） -->
+    <div v-if="chat.currentCampaignId" class="scroll-fabs">
+      <button class="fab" title="回到顶部" @click="scrollTop"><Icon name="chevronUp" :size="16" /></button>
+      <button class="fab" title="回到底部" @click="scrollBottom()"><Icon name="chevronDown" :size="16" /></button>
     </div>
 
     <!-- 输入栏（布局底部块，键盘弹出自动上移） -->
@@ -588,6 +624,7 @@ async function saveCharDetail(updated: Character) {
       v-if="charDetail"
       :character="charDetail"
       :schema="chat.attrSchema()"
+      :bars="chat.barDefs()"
       @close="charDetail = null"
       @saved="saveCharDetail"
     />

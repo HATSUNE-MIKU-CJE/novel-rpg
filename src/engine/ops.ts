@@ -26,13 +26,17 @@ export interface OpBlock {
   label?: string
   dims?: Array<{ label: string }>   // schema.propose
   realmLabel?: string
+  /** bar.config：条模板建议 */
+  bars?: Array<{ name: string; color?: string; max?: number; enabled?: boolean }>
+  /** [[BAR]] 直通块：状态更新（name 角色名，values 条名→数值） */
+  values?: Record<string, number>
 }
 
 export const OP_KINDS = new Set([
   'entry.upsert', 'entry.delete', 'entry.disable',
   'char.upsert', 'char.rename',
   'rel.upsert', 'rel.delete',
-  'schema.propose',
+  'schema.propose', 'bar.config',
 ])
 
 /** 从 AI 回复提取协议块，返回净化后的正文 + 操作列表（最多 5 条） */
@@ -49,6 +53,29 @@ export function parseOps(text: string): { clean: string; ops: OpBlock[] } {
     .replace(/\n{3,}/g, '\n\n')
     .trim()
   return { clean, ops: ops.slice(0, 5) }
+}
+
+/** 游戏流状态条直通块 [[BAR]]{name,values}[[/BAR]]（直接生效，不走审计） */
+export function parseBars(text: string): { clean: string; updates: Array<{ name?: string; values: Record<string, number> }> } {
+  const updates: Array<{ name?: string; values: Record<string, number> }> = []
+  const clean = text
+    .replace(/\[\[BAR\]\]([\s\S]*?)\[\[\/BAR\]\]/gi, (_m, inner: string) => {
+      try {
+        const p = extractJson<{ name?: string; values?: Record<string, number> }>(inner)
+        if (p && p.values && typeof p.values === 'object') {
+          const vals: Record<string, number> = {}
+          for (const [k, v] of Object.entries(p.values)) {
+            const n = Number(v)
+            if (isFinite(n)) vals[k] = n
+          }
+          if (Object.keys(vals).length) updates.push({ name: p.name, values: vals })
+        }
+      } catch { /* 坏块忽略 */ }
+      return ''
+    })
+    .replace(/\n{3,}/g, '\n\n')
+    .trim()
+  return { clean, updates }
 }
 
 /** 操作大类 → 展示色标 */
