@@ -44,5 +44,31 @@ check('无标签回退原文', r.body === RAW && r.isDreamPlot === false)
 r = parseDreamPlot('<dream_plot>\n<dream_body>\n<dream_scene>\n<date>2018年6月3日')
 check('流式中间态显示正文前缀', r.body.includes('2018年6月3日') || r.body.length > 0)
 
+// 7. v2.1.1：after_format 塞入写作规范 + 正文副本 + [[BAR]]（用户复现）
+const LEAK = `<dream_plot><dream_body>这是纯净正文。</dream_body>
+<dream_after_format>
+，其中可包含状态栏。
+二、辨视角：
+- 主要角色：林一。只有自然环境和动物（苍鹭）。
+三、遵写规：
+- 文风：直接白话
+[[BAR]]{"name":"林一","values":{"血条":72}}[[/BAR]]
+</dream_after_format></dream_plot>`
+r = parseDreamPlot(LEAK)
+check('after_format 复述置空', r.afterFormat === '', JSON.stringify(r.afterFormat))
+check('正文不受影响', r.body === '这是纯净正文。', r.body)
+check('BAR 不入 afterFormat', !r.afterFormat.includes('BAR'))
+check('BAR 不入 body', !r.body.includes('BAR'))
+
+// 8. after_format 超长（正文镜像）→ 置空
+const MIRROR = `<dream_plot><dream_body>短正文。</dream_body><dream_after_format>${'复'.repeat(400)}</dream_after_format></dream_plot>`
+r = parseDreamPlot(MIRROR)
+check('after_format 超长镜像置空', r.afterFormat === '', String(r.afterFormat.length))
+
+// 9. after_format 合法短内容保留
+const OKAF = `<dream_plot><dream_body>正文。</dream_body><dream_after_format>碎石路，风停了。</dream_after_format></dream_plot>`
+r = parseDreamPlot(OKAF)
+check('after_format 合法短内容保留', r.afterFormat === '碎石路，风停了。', r.afterFormat)
+
 console.log(`\n结果：${pass} 通过 / ${fail} 失败`)
 process.exit(fail ? 1 : 0)

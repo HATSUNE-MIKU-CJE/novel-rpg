@@ -55,7 +55,8 @@ const mock = createServer((req: IncomingMessage, res: ServerResponse) => {
         content = `好，${echoed.slice(0, 30)} —— 这个方向很有味道。我们先把世界观锚定：你想让铁炉堡处于什么时代？`
       }
     } else {
-      content = `<dream_plot>\n<dream_body>回应：「${echoed.slice(0, 40)}」</dream_body>\n<dream_after_format>\n<dream_done/>\n</dream_after_format>\n</dream_plot>\n[[BAR]]{"name":"艾莉丝","values":{"血条":72}}[[/BAR]]`
+      // v2.1.1：游戏流回复模拟「after_format 泄漏场景」（规范复述 + 正文镜像 + BAR 塞进后置区）
+      content = `<dream_plot>\n<dream_body>回应：「${echoed.slice(0, 40)}」</dream_body>\n<dream_after_format>\n，其中可包含状态栏。\n二、辨视角：\n- 主要角色：艾莉丝。\n三、遵写规：\n- 文风：直接白话\n回应：「${echoed.slice(0, 40)}」\n[[BAR]]{"name":"艾莉丝","values":{"血条":72}}[[/BAR]]\n</dream_after_format>\n</dream_plot>`
     }
 
     if (parsed.stream) {
@@ -207,6 +208,10 @@ await page.locator('.send-btn').click()
 await page.waitForTimeout(2500)
 check('游戏用户消息上屏', await page.getByText('我走到东门前，敲了三下。').count() > 0)
 check('AI 回复上屏（XML 解析成正文）', await page.getByText(/回应：/).count() > 0)
+check('无泄漏文本（辨视角不显示）', await page.getByText('辨视角').count() === 0)
+check('无泄漏文本（遵写规不显示）', await page.getByText('遵写规').count() === 0)
+check('无 BAR 原文上屏', await page.getByText('[[BAR]]').count() === 0)
+check('无 XML 标签原文上屏', await page.getByText('dream_after_format').count() === 0)
 check('token 统计显示', await page.getByText(/共 3\.7k token/).count() > 0)
 check('金额折算显示', await page.getByText(/¥0\./).count() > 0)
 check('状态条 HUD 出现（AI 报数 72/100）', await page.getByText('72/100').count() > 0)

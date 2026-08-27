@@ -559,18 +559,17 @@ export const useChatStore = defineStore('chat', {
         })
         this.liveText = ''
         const reply = { content: streamed.content, reasoning: streamed.reasoning, usage: streamed.usage }
-        const parsed = stream === 'game' ? parseDreamPlot(reply.content) : null
-        const usage = reply.usage ? parseUsage({ usage: reply.usage }) : null
-        const cost = usage && estimateCostYuan(api.model, usage, new Date())
-        const costYuan = cost?.costYuan
-
-        // v1.8：游戏流解析状态条直通块（直接生效）
+        // v2.1.1：先剥 [[BAR]] 直通块，再解析 XML（避免 BAR 在 after_format 内时泄漏显示）
         let content = reply.content
         if (stream === 'game') {
           const bars = parseBars(reply.content)
           content = bars.clean
           if (bars.updates.length) await this.applyBarUpdates(bars.updates)
         }
+        const parsed = stream === 'game' ? parseDreamPlot(content) : null
+        const usage = reply.usage ? parseUsage({ usage: reply.usage }) : null
+        const cost = usage && estimateCostYuan(api.model, usage, new Date())
+        const costYuan = cost?.costYuan
         // v1.5：交流流解析 AI 操作块 → 临时区审计；ref 编号就地解析为 entryId
         let opCount = 0
         const newOpIds: number[] = []

@@ -499,8 +499,8 @@ async function saveCharDetail(updated: Character) {
               <span class="msg-usage-del" @click="chat.regenerate()"><Icon name="refresh" :size="12" /> 重发</span>
             </div>
 
-            <!-- 后置格式（状态栏等，游戏流） -->
-            <div v-if="m.role === 'assistant' && chat.currentStream === 'game' && parseMsg(m)?.afterFormat" class="after-format">
+            <!-- 后置格式（状态栏等，游戏流；v2.1.1 屏蔽超长/复述残留，双保险） -->
+            <div v-if="m.role === 'assistant' && chat.currentStream === 'game' && parseMsg(m)?.afterFormat && parseMsg(m)!.afterFormat.length <= 280" class="after-format">
               {{ parseMsg(m)!.afterFormat }}
             </div>
 

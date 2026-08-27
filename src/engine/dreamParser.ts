@@ -63,6 +63,7 @@ export function parseDreamPlot(raw: string): ParsedDream {
       .replace(/<dream_scene[\s\S]*?<\/dream_scene>/gi, '')
       .replace(/<\/?dream_[a-z_]+[^>]*>/gi, '')
       .replace(/<[a-zA-Z][^>]*>/g, '')
+      .replace(/\[\[BAR\]\][\s\S]*?\[\/BAR\]/gi, '')
       .trim()
   }
   if (!body) body = trimmed
@@ -85,8 +86,24 @@ export function parseDreamPlot(raw: string): ParsedDream {
     body,
     scene,
     options,
-    afterFormat: afterFormatRaw.replace(/<dream_done\s*\/?>/gi, '').replace(TAG_RE, '').trim(),
+    afterFormat: cleanAfterFormat(afterFormatRaw),
     raw: trimmed,
     isDreamPlot,
   }
+}
+
+/** v2.1.1：after_format 残留清洗——AI 偶发把写作规范/正文复述/BAR 块塞进后置区：
+ * 剥标签去 BAR 后，残留疑似「复述特征」或超长时置空（不显示）。 */
+const AFTER_LEAK_RE = /辨视角|遵写规|演叙事|在正文前|须输出|必须先|必输出|禁词|信息差|「不是|“不是|收集物资|当前状态|前尘已定|梦境将演/
+function cleanAfterFormat(raw: string): string {
+  const t = raw
+    .replace(/<dream_done\s*\/?>/gi, '')
+    .replace(/\[\[BAR\]\][\s\S]*?\[\/BAR\]/gi, '')
+    .replace(TAG_RE, '')
+    .trim()
+  if (!t) return ''
+  // 超长：合法后置格式（选项/简短状态）通常很短；长文本大概率是复述/正文镜像
+  if (t.length > 280) return ''
+  if (AFTER_LEAK_RE.test(t)) return ''
+  return t
 }
