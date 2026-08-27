@@ -1,9 +1,10 @@
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, watch } from 'vue'
 import { Capacitor } from '@capacitor/core'
 import { StatusBar } from '@capacitor/status-bar'
 import { useDataStore } from './stores/data'
 import { useChatStore } from './stores/chat'
+import { db } from './db'
 import { initKeyboardHeight } from './engine/keyboard'
 import ChatView from './views/ChatView.vue'
 import PanelView from './views/PanelView.vue'
@@ -15,6 +16,24 @@ const chat = useChatStore()
 const tab = ref<'chat' | 'panel' | 'settings'>(readHash())
 const toast = ref('')
 let toastTimer: number | undefined
+
+// ---- v2.0 面板红点（待确认操作 + 待确认条目） ----
+const pendingBadge = ref(0)
+async function refreshBadge() {
+  const cid = chat.currentCampaignId
+  if (!cid) { pendingBadge.value = 0; return }
+  const [ops, entries] = await Promise.all([
+    db.ops.where('campaignId').equals(cid).and((o) => o.status === 'pending').count(),
+    (async () => {
+      const c = chat.currentCampaign
+      if (!c?.notebookWorldbookId) return 0
+      return db.entries.where('worldbookId').equals(c.notebookWorldbookId).and((e) => e.status === 'pending').count()
+    })(),
+  ])
+  pendingBadge.value = ops + entries
+}
+watch(() => [chat.currentCampaignId, chat.lastOpCount, ds.entries.length], () => refreshBadge(), { deep: true })
+onMounted(refreshBadge)
 
 // ---- 主题（深色梦境） ----
 const theme = ref<'light' | 'dark'>(localStorage.getItem('dream-theme') === 'dark' ? 'dark' : 'light')
@@ -78,7 +97,9 @@ onMounted(async () => {
         <span class="ico"><Icon name="chat" :size="20" /></span>对话
       </button>
       <button class="tab" :class="{ active: tab === 'panel' }" @click="setTab('panel')">
-        <span class="ico"><Icon name="panel" :size="20" /></span>面板
+        <span class="ico" style="position:relative"><Icon name="panel" :size="20" />
+          <span v-if="pendingBadge > 0" class="tab-badge">{{ pendingBadge > 99 ? '99+' : pendingBadge }}</span>
+        </span>面板
       </button>
       <button class="tab" :class="{ active: tab === 'settings' }" @click="setTab('settings')">
         <span class="ico"><Icon name="gear" :size="20" /></span>设置

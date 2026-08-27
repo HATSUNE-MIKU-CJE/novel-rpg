@@ -7,7 +7,8 @@ import { useChatStore, type StartGamePack } from '../stores/chat'
 import CharacterDetail from './CharacterDetail.vue'
 import Icon from '../components/Icon.vue'
 import ContextRing from '../components/ContextRing.vue'
-import type { Message, Character, StreamKind } from '../types'
+import OpCard from '../components/OpCard.vue'
+import type { Message, Character, StreamKind, Op, Entry } from '../types'
 import type { ParsedDream } from '../engine/dreamParser'
 
 const ds = useDataStore()
@@ -158,9 +159,9 @@ async function send() {
   if (!text || chat.sending) return
   draft.value = ''
   await chat.sendUserMessage(text)
-  // AI 操作提示（交流栏：AI 提交了操作块 → 去临时区确认）
+  // AI 操作提示（v2.0：操作卡内嵌在对方消息下方，提示就地确认）
   if (chat.lastOpCount > 0) {
-    showToast(`AI 提交了 ${chat.lastOpCount} 项操作，去 面板→世界 确认`)
+    showToast(`AI 提交了 ${chat.lastOpCount} 项操作，在消息下方确认`)
     chat.lastOpCount = 0
   }
   scrollBottom()
@@ -197,12 +198,60 @@ function showToast(msg: string) {
 // ---- 双向同步按钮 ----
 async function syncFromTalk() {
   const r = await chat.syncFrom('talk')
-  showToast(r.skipped ? '交流栏暂无新设定' : `已同步设定：角色 ${r.chars} · 关系 ${r.rels} · 事实 ${r.facts}（待审阅）`)
+  showToast(r.skipped ? '交流栏暂无新设定' : `已整理交流设定：角色 ${r.chars} · 关系 ${r.rels} · 新条目 ${r.facts}${r.upd ? ` · 更新 ${r.upd} 项（待确认）` : ''}`)
 }
 async function syncFromGame() {
   const r = await chat.syncFrom('game')
-  showToast(r.skipped ? '游戏进程暂无新内容' : `已更新：角色 ${r.chars} · 关系 ${r.rels} · 事实 ${r.facts}（待审阅）`)
+  showToast(r.skipped ? '游戏进程暂无新内容' : `已整理游戏进程：角色 ${r.chars} · 关系 ${r.rels} · 新条目 ${r.facts}${r.upd ? ` · 更新 ${r.upd} 项（待确认）` : ''}`)
 }
+
+// ---- v2.0 消息内嵌操作卡（交流栏） ----
+const msgOps = ref<Map<number, Op[]>>(new Map())
+async function refreshMsgOps() {
+  const cid = chat.currentCampaignId
+  if (!cid) { msgOps.value = new Map(); return }
+  const list = await db.ops.where('campaignId').equals(cid).and((o) => !!o.msgId).toArray()
+  const map = new Map<number, Op[]>()
+  for (const o of list) {
+    const arr = map.get(o.msgId!) ?? []
+    arr.push(o)
+    map.set(o.msgId!, arr)
+  }
+  msgOps.value = map
+}
+function opsOfMsg(id?: number): Op[] { return id ? (msgOps.value.get(id) ?? []) : [] }
+/** 操作目标条目（diff 预览用） */
+function opTarget(op: Op): Entry | null {
+  try {
+    const p = JSON.parse(op.payload)
+    if (p.entryId) return ds.entries.find((e) => e.id === p.entryId) ?? null
+    if (p.key) {
+      const keys = String(p.key).split(/[,，]/).map((k: string) => k.trim()).filter(Boolean)
+      return ds.entries.find((e) => (e.key || '').split(/[,，]/).some((k) => keys.includes(k) || keys.some((x: string) => x.includes(k) || k.includes(x)))) ?? null
+    }
+    return null
+  } catch { return null }
+}
+async function confirmMsgOp(op: Op) {
+  const ok = await chat.executeOp(op.id!)
+  showToast(ok ? '已生效' : (chat.error || '执行失败（目标不存在）'))
+  await refreshMsgOps()
+}
+async function rejectMsgOp(op: Op) {
+  await chat.rejectOp(op.id!)
+  showToast('已退回，未生效')
+  await refreshMsgOps()
+}
+watch(() => [chat.currentCampaignId, chat.lastOpCount, chat.talkMessages.length, chat.gameMessages.length], () => refreshMsgOps())
+onMounted(refreshMsgOps)
+
+/** v2.0：交流栏未整理的用户消息数（提取横幅） */
+const unorganised = computed(() => {
+  const c = chat.currentCampaign
+  if (!c || chat.currentStream !== 'talk') return 0
+  const cutoff = c.lastSyncedTalkSeq ?? 0
+  return chat.talkMessages.filter((m) => m.role === 'user' && (m.seq ?? 0) > cutoff).length
+})
 
 // ---- 章节总结 ----
 async function doSummary() {
@@ -329,8 +378,8 @@ async function saveCharDetail(updated: Character) {
           <button class="btn btn-ghost btn-sm" :disabled="chat.compacting" @click="chat.compactContext('talk')">
             {{ chat.compacting ? '压缩中…' : '压缩' }}
           </button>
-          <button class="btn btn-warm btn-sm" :disabled="chat.organizing" @click="syncFromGame">
-            <Icon name="refresh" :size="13" /> {{ chat.organizing ? '同步中…' : '更新' }}
+          <button class="btn btn-warm btn-sm" :disabled="chat.organizing" @click="syncFromTalk">
+            <Icon name="refresh" :size="13" /> {{ chat.organizing ? '整理中…' : '整理设定' }}
           </button>
         </template>
         <template v-else>
@@ -338,8 +387,8 @@ async function saveCharDetail(updated: Character) {
             {{ chat.compacting ? '压缩中…' : '压缩' }}
           </button>
           <button class="btn btn-ghost btn-sm" :disabled="chat.organizing" @click="doSummary"><Icon name="scroll" :size="14" /> 总结</button>
-          <button class="btn btn-warm btn-sm" :disabled="chat.organizing" @click="syncFromTalk">
-            <Icon name="refresh" :size="13" /> {{ chat.organizing ? '同步中…' : '同步设定' }}
+          <button class="btn btn-warm btn-sm" :disabled="chat.organizing" @click="syncFromGame">
+            <Icon name="refresh" :size="13" /> {{ chat.organizing ? '整理中…' : '整理剧情' }}
           </button>
         </template>
         <ContextRing :pct="chat.ctxPressure(chat.currentStream)" :size="22" />
@@ -348,6 +397,12 @@ async function saveCharDetail(updated: Character) {
 
     <!-- 消息流 -->
     <div ref="listEl" class="chat-scroll" :style="{ paddingBottom: listPad + 'px' }" v-if="chat.currentCampaignId">
+      <!-- v2.0：交流栏未整理提示横幅 -->
+      <div v-if="unorganised > 0 && !chat.organizing" class="extract-banner" @click="syncFromTalk">
+        <Icon name="sparkle" :size="14" />
+        <span class="extract-banner-text">交流中还有 {{ unorganised }} 条消息未整理</span>
+        <span class="extract-banner-action">{{ chat.organizing ? '整理中…' : '点击整理 →' }}</span>
+      </div>
       <!-- 主角状态条（游戏栏 HUD） -->
       <div v-if="chat.currentStream === 'game' && heroState" class="hud-bars">
         <div class="hud-hero">{{ heroState.name }}</div>
@@ -450,6 +505,19 @@ async function saveCharDetail(updated: Character) {
                 @click="pickOption(opt)"
               ><Icon name="sparkle" :size="13" /> {{ opt }}</button>
             </div>
+
+            <!-- v2.0：操作确认卡（交流栏消息内嵌，就地确认/退回） -->
+            <template v-if="m.role === 'assistant' && chat.currentStream === 'talk' && opsOfMsg(m.id)?.length">
+              <OpCard
+                v-for="op in opsOfMsg(m.id)"
+                :key="op.id"
+                :op="op"
+                :target="opTarget(op)"
+                :compact="true"
+                @confirm="confirmMsgOp(op)"
+                @reject="rejectMsgOp(op)"
+              />
+            </template>
           </div>
         </template>
 

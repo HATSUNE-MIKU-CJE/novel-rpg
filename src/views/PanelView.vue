@@ -10,7 +10,7 @@ import { opGroup, opGroupLabel, opTitle, type OpBlock } from '../engine/ops'
 import RelationGraph from './RelationGraph.vue'
 import CharacterDetail from './CharacterDetail.vue'
 import Icon from '../components/Icon.vue'
-import type { Character, Relation, Worldbook, Entry, Op } from '../types'
+import type { Character, Relation, Worldbook, Entry, Op, TrashItem } from '../types'
 
 const ds = useDataStore()
 const chat = useChatStore()
@@ -133,6 +133,8 @@ async function refreshOps() {
 watch(() => chat.currentCampaignId, refreshOps)
 // v-show 常驻下无重挂载：AI 提交操作（lastOpCount 变化）时刷新
 watch(() => chat.lastOpCount, () => refreshOps())
+// v2.0：就地确认（交流栏操作卡）后同步刷新面板待确认区
+watch(() => chat.opsVersion, () => refreshOps())
 onMounted(refreshOps)
 
 function opPayload(op: Op): OpBlock {
@@ -235,16 +237,50 @@ const dupGroups = computed(() => {
 })
 /** 重复条目总数（每组 -1 = 冗余条数） */
 const dupCount = computed(() => dupGroups.value.reduce((n, g) => n + g.length - 1, 0))
+// v2.0：清理预览（先看后删，可撤销）
+const cleanPreview = ref(false)
+/** 清理预览快照：[保留条目, 冗余列表] */
+const cleanPlan = ref<Array<{ keep: Entry; drops: Entry[] }>>([])
+function beginCleanPreview() {
+  cleanPlan.value = dupGroups.value.map((g) => {
+    const sorted = [...g].sort((a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0))
+    return { keep: sorted[0], drops: sorted.slice(1) }
+  })
+  cleanPreview.value = true
+}
 async function cleanDupes() {
-  const total = dupCount.value
+  const total = cleanPlan.value.reduce((n, x) => n + x.drops.length, 0)
   if (!total) return
-  if (!confirm(`将删除 ${total} 条重复设定（每组保留最新一条），确定？`)) return
   let n = 0
-  for (const g of dupGroups.value) {
-    g.sort((a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0))
-    for (const e of g.slice(1)) if (e.id) { await ds.deleteEntry(e.id); n++ }
+  for (const x of cleanPlan.value) {
+    for (const e of x.drops) if (e.id) { await ds.deleteEntry(e.id); n++ }
   }
-  showToast(`已清理 ${n} 条重复设定`)
+  cleanPreview.value = false
+  showToast(`已清理 ${n} 条重复设定（可撤销）`)
+}
+/** v2.0：回收站还原 */
+async function doRestore(t: TrashItem) {
+  const ok = await ds.restoreTrash(t.id!)
+  showToast(ok ? '已还原' : '还原失败')
+}
+/** v2.0：清理全部回收站 */
+async function clearTrash() {
+  if (!confirm('永久清空回收站？此操作不可恢复。')) return
+  for (const t of ds.trashed) if (t.id) await db.trash.delete(t.id)
+  await ds.loadAll()
+  showToast('回收站已清空')
+}
+/** v2.0：条目来源标签 */
+function entrySourceLabel(e: Entry): string {
+  if (e.source === 'ai') return 'AI 提取/写入'
+  if (e.source === 'imported') return '导入'
+  return '手动'
+}
+function fmtDate(t?: number): string {
+  if (!t) return ''
+  const d = new Date(t)
+  const pad = (n: number) => String(n).padStart(2, '0')
+  return `${d.getMonth() + 1}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`
 }
 async function deleteCategory(cat: string) {
   const ents = worldGroups.value.find((x) => x.category === cat)?.entries ?? []
@@ -496,6 +532,43 @@ async function download(name: string, content: string, mime = 'application/json'
   }
 }
 
+// ---- v2.0 自动化与诊断 ----
+const talkAutoSel = ref(chat.currentCampaign?.talkAutoInterval ?? 0)
+async function saveTalkAuto() {
+  const c = chat.currentCampaign
+  if (!c) return
+  c.talkAutoInterval = Number(talkAutoSel.value) || 0
+  await ds.saveCampaign(c)
+  showToast(talkAutoSel.value ? `交流栏每 ${talkAutoSel.value} 条消息自动整理` : '已关闭自动整理')
+}
+/** v2.0：导出全量世界书数据（诊断/备份） */
+async function exportDiagnostics() {
+  const cid = chat.currentCampaignId
+  const [entries, ops, trash, chars, rels, bindings] = await Promise.all([
+    cid ? db.entries.toArray() : [],          // 全量（含其他存档，便于对照）
+    cid ? db.ops.where('campaignId').equals(cid).toArray() : [],
+    db.trash.toArray(),
+    cid ? db.characters.where('campaignId').equals(cid).toArray() : [],
+    cid ? db.relations.where('campaignId').equals(cid).toArray() : [],
+    cid ? db.campaignBindings.where('campaignId').equals(cid).toArray() : [],
+  ])
+  const data = {
+    app: '梦旅 NovelRPG',
+    ver: 'v2.0',
+    exportedAt: new Date().toISOString(),
+    campaign: chat.currentCampaign ? { id: chat.currentCampaign.id, name: chat.currentCampaign.name } : null,
+    worldbooks: ds.worldbooks,
+    entries,
+    ops,
+    trash,
+    characters: chars,
+    relations: rels,
+    bindings,
+  }
+  await download(`梦旅-世界书诊断-${Date.now()}.json`, JSON.stringify(data, null, 2))
+  showToast('已导出世界书数据（JSON）')
+}
+
 /** 导出某本世界书为规范 JSON */
 async function exportWb(wb: Worldbook) {
   const entries = ds.entriesOf(wb.id!)
@@ -619,6 +692,18 @@ function showToast(msg: string) {
 
     <!-- ===== 世界 ===== -->
     <div v-if="tab === 'world'">
+      <!-- v2.0 回收站（删除可撤销） -->
+      <div v-if="ds.trashed.length" class="card" style="margin-bottom:12px; border:1px solid var(--line)">
+        <div style="display:flex; align-items:center; gap:8px">
+          <b style="flex:1"><Icon name="archive" :size="15" /> 回收站（{{ ds.trashed.length }} 条待恢复）</b>
+          <button class="btn btn-ghost btn-sm" @click="clearTrash">清空</button>
+        </div>
+        <div v-for="t in ds.trashed.slice(0, 3)" :key="t.id" class="entry-item" style="padding:8px 0">
+          <div style="flex:1; min-width:0" class="list-sub">{{ t.title }}</div>
+          <button class="btn btn-warm btn-sm" @click="doRestore(t)">还原</button>
+        </div>
+      </div>
+
       <!-- 属性设定 -->
       <div class="card" style="margin-bottom:12px">
         <div style="display:flex; align-items:center; margin-bottom:6px">
@@ -718,7 +803,11 @@ function showToast(msg: string) {
             'tag-danger': opView(op).group === 'del',
           }">{{ opView(op).groupLabel }}</span>
           <div style="flex:1; min-width:0">
-            <div class="list-title" style="font-size:13px">{{ opView(op).title }}</div>
+            <div class="list-title" style="font-size:13px">
+              {{ opView(op).title }}
+              <span v-if="opView(op).group === 'mod' && opView(op).before !== undefined" class="entry-tag tag-warm" style="margin-left:4px">将覆盖</span>
+              <span v-if="op.src === 'extract'" class="entry-tag tag-constant" style="margin-left:4px">整理提取</span>
+            </div>
             <div v-if="opView(op).before !== undefined" class="list-sub" style="white-space:pre-wrap">
               <span style="text-decoration:line-through; opacity:.6">{{ (opView(op).before || '').slice(0, 60) }}</span>
               <span style="color:var(--ok)"> → {{ (opView(op).after || '').slice(0, 60) }}</span>
@@ -765,9 +854,6 @@ function showToast(msg: string) {
           <button class="btn btn-ghost btn-sm" @click.stop="beginRenameCat(g.category)" title="重命名类别">
             <Icon name="pencil" :size="13" />
           </button>
-          <button class="btn btn-danger btn-sm" @click.stop="deleteCategory(g.category)" title="删除整卡">
-            <Icon name="trash" :size="13" />
-          </button>
           <span class="collapse-arrow"><Icon name="chevronDown" :size="12" /></span>
         </div>
         <div class="list-sub" style="margin-top:4px">{{ catSummary(g.category) }}</div>
@@ -791,7 +877,7 @@ function showToast(msg: string) {
         <span style="flex:1; font-size:12.5px; color:var(--ink)">
           检测到 {{ dupGroups.length }} 组重复设定（共 {{ dupCount }} 条冗余）——同触发词且内容一致，通常由 AI 反复提取产生
         </span>
-        <button class="btn btn-warm btn-sm" @click="cleanDupes">一键清理</button>
+        <button class="btn btn-warm btn-sm" @click="beginCleanPreview">一键清理</button>
       </div>
       <div class="card" style="max-width:640px; margin:12px auto 0">
         <div v-if="!catEntries.length" class="empty-hint">这个类别还是空的 —— 点右上角新增</div>
@@ -801,11 +887,17 @@ function showToast(msg: string) {
           </span>
           <div style="flex:1; min-width:0">
             <div class="list-sub" style="white-space:pre-wrap; font-size:13px; color:var(--ink)">{{ e.content }}</div>
+            <div class="list-sub" style="margin-top:2px; color:var(--ink-soft); font-size:10.5px">
+              {{ entrySourceLabel(e) }}<template v-if="e.updatedAt"> · {{ fmtDate(e.updatedAt) }}</template>
+            </div>
           </div>
           <button class="btn btn-ghost btn-sm" :title="e.enabled ? '停用' : '启用'" @click="toggleEntryEnabled(e)">{{ e.enabled ? '停' : '启' }}</button>
           <button class="btn btn-ghost btn-sm" @click="openEdit(e)">编</button>
           <button class="btn btn-danger btn-sm" @click="removeEntry(e)">删</button>
         </div>
+      </div>
+      <div style="max-width:640px; margin:14px auto 0; text-align:center">
+        <button class="btn btn-danger btn-sm" @click="deleteCategory(catDetail!)"><Icon name="trash" :size="12" /> 删除整个类别（{{ catEntries.length }} 条）</button>
       </div>
     </div>
 
@@ -824,10 +916,48 @@ function showToast(msg: string) {
       </div>
     </div>
 
+    <!-- v2.0 重复清理预览（先看后删，删除进回收站可还原） -->
+    <div v-if="cleanPreview" class="modal-mask" @click.self="cleanPreview = false">
+      <div class="modal-sheet">
+        <div class="modal-title">清理重复设定</div>
+        <div class="list-sub" style="margin-bottom:8px">删除前对比：每组保留最新一条，其余进回收站（可还原）</div>
+        <div v-for="(x, i) in cleanPlan" :key="i" style="border-top:1px solid var(--line); padding:8px 0">
+          <div class="list-sub" style="font-weight:600; color:var(--ok)">第 {{ i + 1 }} 组 · 保留</div>
+          <div class="list-sub" style="font-size:12.5px; color:var(--ink); margin-bottom:4px">{{ x.keep.content.slice(0, 70) }}</div>
+          <div class="list-sub" style="color:var(--danger)">删除 {{ x.drops.length }} 条</div>
+          <div v-for="d in x.drops" :key="d.id" class="list-sub" style="font-size:11.5px; color:var(--ink-soft)">{{ d.content.slice(0, 50) }}</div>
+        </div>
+        <div style="display:flex; gap:10px; margin-top:12px">
+          <button class="btn btn-ghost" style="flex:1" @click="cleanPreview = false">取消</button>
+          <button class="btn btn-warm" style="flex:2" @click="cleanDupes">确认清理（{{ dupCount }} 条）</button>
+        </div>
+      </div>
+    </div>
+
     <!-- ===== 配置 ===== -->
     <div v-if="tab === 'config'">
       <div class="list-sub" style="margin-bottom:10px">
         绑定说明：世界书被存档「绑定」后，其已确认条目会注入该存档的对话。
+      </div>
+
+      <!-- v2.0 数据与自动化 -->
+      <div class="card" style="margin-bottom:12px">
+        <div style="display:flex; align-items:center; margin-bottom:8px">
+          <b style="flex:1"><Icon name="gear" :size="15" /> 自动化与数据</b>
+        </div>
+        <div class="field" style="margin-top:0">
+          <label>交流栏自动整理（聊够 N 条用户消息后自动提取设定）</label>
+          <select v-model.number="talkAutoSel" @change="saveTalkAuto">
+            <option :value="0">关闭（手动点「整理设定」）</option>
+            <option :value="4">每 4 条消息</option>
+            <option :value="6">每 6 条消息</option>
+            <option :value="8">每 8 条消息</option>
+          </select>
+        </div>
+        <div class="list-sub">游戏栏自动整理在新建存档时设置（每 N 轮）</div>
+        <button class="btn btn-soft btn-block" style="margin-top:10px" @click="exportDiagnostics">
+          <Icon name="download" :size="13" /> 导出世界书数据（JSON · 含待确认/回收站/操作记录）
+        </button>
       </div>
 
       <!-- 世界书（书本卡） -->

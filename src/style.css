@@ -136,6 +136,12 @@ textarea { resize: vertical; min-height: 60px; }
 }
 .tabbar .tab.active { color: var(--accent-deep); }
 .tabbar .tab .ico { font-size: 19px; }
+.tab-badge {
+  position: absolute; top: -4px; right: -8px;
+  min-width: 15px; height: 15px; padding: 0 3px;
+  border-radius: 8px; background: var(--danger); color: #fff;
+  font-size: 9.5px; font-weight: 700; line-height: 15px; text-align: center;
+}
 
 /* ---------- 对话页 ---------- */
 /* v1.3 内部固定布局：顶部/选项/输入都是普通块，仅消息区滚动（根治黏不住/漏头） */
@@ -154,6 +160,23 @@ textarea { resize: vertical; min-height: 60px; }
   min-height: 0;
 }
 .chat-scroll > .empty-hint { margin-top: 16px; }
+
+/* v2.0 交流栏未整理提示横幅 */
+.extract-banner {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 12px;
+  margin-bottom: 8px;
+  border: 1px solid var(--warm);
+  border-radius: var(--radius-sm);
+  background: var(--warm-soft);
+  color: var(--warm);
+  font-size: 12.5px;
+  cursor: pointer;
+}
+.extract-banner-text { flex: 1; min-width: 0; }
+.extract-banner-action { flex-shrink: 0; color: var(--warm); font-weight: 600; }
 
 .chat-header {
   display: flex; align-items: center; gap: 10px;

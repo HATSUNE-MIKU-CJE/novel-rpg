@@ -12,6 +12,7 @@ import {
   parseAttrSchema, attrSchemaJson, type AttrSchema,
 } from '../engine/extractor'
 import { parseOps, opGroup, resolveRefs, parseBars, type OpBlock } from '../engine/ops'
+import { dedupStatus } from '../engine/dedup'
 import { parseBarSchema, barSchemaJson, readBarValues, writeBarValues, type BarSchema, type BarDef } from '../engine/bars'
 import { httpFetch } from '../engine/http'
 import type { WorldOverview, Entry as EntryType } from '../types'
@@ -37,6 +38,8 @@ export interface SyncOutcome {
   chars: number
   rels: number
   facts: number
+  /** v2.0：同 key 已有条目 → 生成的「更新」操作数（进审计待确认） */
+  upd?: number
   skipped: boolean   // 素材过短未提炼
 }
 
@@ -61,6 +64,8 @@ export const useChatStore = defineStore('chat', {
     organizing: false,
     /** 上一轮交流 AI 提交的操作数（UI 提示用） */
     lastOpCount: 0,
+    /** v2.0：操作审计版本号（确认/退回/批量后递增，UI 据此刷新待确认列表） */
+    opsVersion: 0,
     error: '' as string,
   }),
   getters: {
@@ -551,19 +556,22 @@ export const useChatStore = defineStore('chat', {
         }
         // v1.5：交流流解析 AI 操作块 → 临时区审计；ref 编号就地解析为 entryId
         let opCount = 0
+        const newOpIds: number[] = []
         if (stream === 'talk') {
           const r = parseOps(reply.content)
           content = r.clean
           if (r.ops.length) {
             const refs = await this.buildSettingRefs()
             for (const o of resolveRefs(r.ops, refs)) {
-              await db.ops.add(plainMsg({
+              const oid = await db.ops.add(plainMsg({
                 campaignId: this.currentCampaignId,
                 kind: o.op,
                 payload: JSON.stringify(o),
                 status: 'pending',
                 createdAt: Date.now(),
+                src: 'ai',
               }))
+              newOpIds.push(oid)
             }
             opCount = r.ops.length
           }
@@ -590,6 +598,10 @@ export const useChatStore = defineStore('chat', {
         }
         asstMsg.id = await db.messages.add(plainMsg(asstMsg))
         arr.push({ ...asstMsg })
+        // v2.0：操作块与消息关联（消息内嵌操作卡按 msgId 查询）
+        if (newOpIds.length && asstMsg.id) {
+          for (const oid of newOpIds) { const op = await db.ops.get(oid); if (op) { op.msgId = asstMsg.id; await db.ops.put(plainMsg(op)) } }
+        }
 
         // 统计累计
         if (usage) {
@@ -604,6 +616,11 @@ export const useChatStore = defineStore('chat', {
           if (usage.promptTokens > campaign.ctxBudget * COMPACT_RATIO) {
             this.compactContext(stream)
           }
+        }
+        // v2.0：交流栏自动整理（talkAutoInterval 条用户消息后同步一次，默认关）
+        if (stream === 'talk' && (campaign.talkAutoInterval ?? 0) > 0 && !this.organizing) {
+          const recentUsers = this.talkMessages.filter((m) => m.role === 'user' && (m.seq ?? 0) > (campaign.lastSyncedTalkSeq ?? 0)).length
+          if (recentUsers >= (campaign.talkAutoInterval ?? 4)) this.syncFrom('talk')
         }
         this.lastOpCount = opCount
         return opCount
@@ -629,6 +646,7 @@ export const useChatStore = defineStore('chat', {
         await db.ops.put(plainMsg(op))
         // 刷新条目/角色/关系缓存（配置 tab 与面板数据源）
         await ds().loadAll()
+        this.opsVersion++
       }
       return ok
     },
@@ -640,6 +658,7 @@ export const useChatStore = defineStore('chat', {
       op.status = 'rejected'
       op.doneAt = Date.now()
       await db.ops.put(plainMsg(op))
+      this.opsVersion++
     },
 
     /** 全部确认（仅非删除类；删除类必须逐条） */
@@ -683,9 +702,9 @@ export const useChatStore = defineStore('chat', {
         switch (p.op) {
           case 'entry.upsert': {
             const notebook = await this.ensureNotebook()
-            // 优先 entryId（ref 已解析）；回退 key 匹配
+            // 优先 entryId（ref 已解析）；条目已被删则回退 key 匹配（防再造成同 key 双条）
             const exist = p.entryId
-              ? await db.entries.get(p.entryId)
+              ? (await db.entries.get(p.entryId)) ?? findNotebookEntry(ds, notebook.id!, normalizeKeys(p.key))
               : findNotebookEntry(ds, notebook.id!, normalizeKeys(p.key))
             if (exist) {
               exist.content = p.content ?? exist.content
@@ -1007,13 +1026,35 @@ export const useChatStore = defineStore('chat', {
           newRels++
         }
 
-        // 5. 写自动笔记簿条目（pending 待审阅；硬去重防重复：触发词相交或正文一致即视为已有）
+        // 5. 写自动笔记簿条目（v2.0 归并：同 key/高度相似不再新增——
+        //    accepted 目标 → 生成「更新」操作进审计（diff 待确认）
+        //    pending 目标 → 就地更新待确认内容（保持单条）
+        //    无目标 → 新建 pending）
         let newFacts = 0
+        let updPlans = 0
         const seenFacts: Array<{ key?: string; content: string }> = []
+        const newOps: Array<{ op: string; entryId?: number; key: string; content: string; category?: string }> = []
         for (const f of result.facts) {
-          const dupExisting = existingFacts.some((e) => factsDup(e, f))
-          const dupSelf = seenFacts.some((s) => factsDup(s, f))
-          if (dupExisting || dupSelf) continue
+          if (seenFacts.some((s) => factsDup(s, f))) continue
+          const hit = existingFacts.find((e) => dedupStatus(e, f) !== null)
+          if (hit) {
+            if (hit.status === 'pending') {
+              // 原地更新待确认内容（防重复 pending）
+              if (hit.content.trim() !== f.content.trim() || (f.category && hit.category !== f.category)) {
+                hit.content = f.content
+                if (f.category) hit.category = f.category
+                hit.updatedAt = Date.now()
+                await db.entries.put(plainMsg(hit))
+              }
+            } else if (hit.content.trim() !== f.content.trim() || (f.category && hit.category !== f.category)) {
+              // 已是正式条目且内容不同 → 生成更新操作（由用户对比确认）
+              newOps.push({ op: 'entry.upsert', entryId: hit.id, key: hit.key || f.key || '', content: f.content, category: f.category })
+              updPlans++
+            }
+            // 内容一致且已有 → 纯重复，什么都不做
+            seenFacts.push(f)
+            continue
+          }
           seenFacts.push(f)
           await db.entries.add(plainMsg({
             worldbookId: notebook.id!,
@@ -1027,16 +1068,29 @@ export const useChatStore = defineStore('chat', {
           }))
           newFacts++
         }
+        if (newOps.length) {
+          for (const o of newOps) {
+            await db.ops.add(plainMsg({
+              campaignId: this.currentCampaignId,
+              kind: o.op,
+              payload: JSON.stringify(o),
+              status: 'pending',
+              createdAt: Date.now(),
+              src: 'extract',
+            }))
+          }
+          this.lastOpCount += newOps.length
+        }
 
         if (source === 'talk') campaign.lastSyncedTalkSeq = recent[recent.length - 1].seq
         else campaign.lastSyncedGameSeq = recent[recent.length - 1].seq
         campaign.lastOrganized = Date.now()
         campaign.organizeStats = JSON.stringify({
-          chars: newChars + updChars, rels: newRels, facts: newFacts, at: Date.now(),
+          chars: newChars + updChars, rels: newRels, facts: newFacts, upd: updPlans, at: Date.now(),
         })
         await ds.saveCampaign(campaign)
         await ds.loadAll()
-        return { chars: newChars + updChars, rels: newRels, facts: newFacts, skipped: false }
+        return { chars: newChars + updChars, rels: newRels, facts: newFacts, upd: updPlans, skipped: false }
       } catch (e: any) {
         this.error = `同步失败：${e?.message || e}`
         return { chars: 0, rels: 0, facts: 0, skipped: true }

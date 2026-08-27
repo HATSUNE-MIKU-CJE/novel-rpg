@@ -53,6 +53,8 @@ export interface Campaign {
   dreamConfigJson?: string
   varsJson?: string      // 会话变量 sleep_var_* 等
   autoInterval?: number  // 每 N 轮自动整理，0=关闭，默认 5
+  /** v2.0：交流栏每 N 条用户消息自动整理（0=关闭，默认 0） */
+  talkAutoInterval?: number
   /** 上下文压缩预算（token），0=不启用；默认 1M */
   ctxBudget?: number
   /** 已压缩的消息 seq 上限（此前的消息已折入摘要） */
@@ -181,4 +183,24 @@ export interface Op {
   status: 'pending' | 'done' | 'rejected'
   createdAt: number
   doneAt?: number
+  /** v2.0：产生该操作的交流栏消息 id（消息内嵌操作卡关联） */
+  msgId?: number
+  /** v2.0：自动/手动同步来源标记（extract=书记官提取 / ai=AI 操作块 / manual=手动） */
+  src?: 'extract' | 'ai' | 'manual'
+}
+
+// ---------------- 回收站（v2.0） ----------------
+/** 被删除的世界书条目/角色/关系，保留以便撤销恢复 */
+export interface TrashItem {
+  id?: number
+  campaignId: number
+  /** entry | character | relation */
+  kind: 'entry' | 'character' | 'relation'
+  /** 被删除记录的主键（恢复时用 put 归还） */
+  refId: number
+  /** 记录完整内容（恢复用） */
+  payload: string
+  /** 删除标题（展示用） */
+  title: string
+  deletedAt: number
 }

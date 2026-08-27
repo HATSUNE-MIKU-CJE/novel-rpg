@@ -1,7 +1,7 @@
 import Dexie, { type Table } from 'dexie'
 import type {
   ApiConfig, Worldbook, Entry, Campaign, CampaignBinding,
-  Preset, Message, Character, Relation, Op,
+  Preset, Message, Character, Relation, Op, TrashItem,
 } from './types'
 
 class NovelRpgDB extends Dexie {
@@ -16,6 +16,8 @@ class NovelRpgDB extends Dexie {
   relations!: Table<Relation, number>
   /** v1.5：AI 操作审计（协议块 → 临时区 → 确认执行/退回） */
   ops!: Table<Op, number>
+  /** v2.0：回收站（删除的世界书条目/角色/关系，可撤销恢复） */
+  trash!: Table<TrashItem, number>
 
   constructor() {
     super('novel-rpg')
@@ -37,6 +39,10 @@ class NovelRpgDB extends Dexie {
     // v1.5：AI 操作审计表
     this.version(3).stores({
       ops: '++id, campaignId, status, [campaignId+status]',
+    })
+    // v2.0：回收站表
+    this.version(4).stores({
+      trash: '++id, campaignId, kind, deletedAt',
     })
   }
 }

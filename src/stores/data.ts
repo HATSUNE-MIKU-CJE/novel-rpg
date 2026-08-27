@@ -1,7 +1,7 @@
 import { defineStore } from 'pinia'
 import { toRaw } from 'vue'
 import { db } from '../db'
-import type { ApiConfig, Preset, Worldbook, Entry, Campaign } from '../types'
+import type { ApiConfig, Preset, Worldbook, Entry, Campaign, TrashItem } from '../types'
 import { parseStPresetJson, type ImportedPreset } from '../engine/presetImport'
 import { seedBuiltinNodes } from '../engine/builtinNodes'
 import { defaultDreamConfig, DREAM_PRESET_NAME } from '../engine/dreamPreset'
@@ -18,22 +18,26 @@ export const useDataStore = defineStore('data', {
     worldbooks: [] as Worldbook[],
     entries: [] as Entry[],
     campaigns: [] as Campaign[],
+    /** v2.0：回收站（最新在前，最多 20 条） */
+    trashed: [] as TrashItem[],
     loaded: false,
   }),
   actions: {
     async loadAll() {
-      const [apiConfigs, presets, worldbooks, entries, campaigns] = await Promise.all([
+      const [apiConfigs, presets, worldbooks, entries, campaigns, trashed] = await Promise.all([
         db.apiConfigs.toArray(),
         db.presets.toArray(),
         db.worldbooks.toArray(),
         db.entries.toArray(),
         db.campaigns.toArray(),
+        db.trash.orderBy('deletedAt').reverse().limit(20).toArray(),
       ])
       this.apiConfigs = apiConfigs
       this.presets = presets
       this.worldbooks = worldbooks
       this.entries = entries
       this.campaigns = campaigns
+      this.trashed = trashed
       this.loaded = true
     },
 
@@ -121,8 +125,37 @@ export const useDataStore = defineStore('data', {
       await this.loadAll()
     },
     async deleteEntry(id: number) {
+      // v2.0：删除前备份到回收站（撤销恢复兜底）
+      const e = await db.entries.get(id)
+      if (e) {
+        await db.trash.add(plain({
+          campaignId: 0,
+          kind: 'entry' as const,
+          refId: e.id!,
+          payload: JSON.stringify(e),
+          title: `${(e.key || '常驻').split(/[,，]/)[0]} · ${(e.content ?? '').slice(0, 32)}`,
+          deletedAt: Date.now(),
+        }))
+      }
       await db.entries.delete(id)
       await this.loadAll()
+    },
+    /** v2.0：还原回收站条目（按 trash id） */
+    async restoreTrash(id: number): Promise<boolean> {
+      const t = await db.trash.get(id)
+      if (!t) return false
+      try {
+        const e = JSON.parse(t.payload) as Entry
+        const exists = await db.entries.get(t.refId)
+        if (!exists) await db.entries.put(e)
+      } catch { /* 坏数据忽略 */ }
+      await db.trash.delete(id)
+      await this.loadAll()
+      return true
+    },
+    /** 最近的回收站条目（世界书条目类） */
+    recentTrash(limit = 5): TrashItem[] {
+      return this.trashed.slice(0, limit)
     },
 
     // ---- 存档 ----
