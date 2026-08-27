@@ -6,6 +6,7 @@ import { readBarValues } from '../engine/bars'
 import { useChatStore, type StartGamePack } from '../stores/chat'
 import CharacterDetail from './CharacterDetail.vue'
 import Icon from '../components/Icon.vue'
+import ContextRing from '../components/ContextRing.vue'
 import type { Message, Character, StreamKind } from '../types'
 import type { ParsedDream } from '../engine/dreamParser'
 
@@ -325,12 +326,15 @@ async function saveCharDetail(updated: Character) {
       </div>
       <div class="stream-actions">
         <template v-if="chat.currentStream === 'talk'">
+          <button class="btn btn-ghost btn-sm" :disabled="chat.compacting" @click="chat.compactContext('talk')">
+            {{ chat.compacting ? '压缩中…' : '压缩' }}
+          </button>
           <button class="btn btn-warm btn-sm" :disabled="chat.organizing" @click="syncFromGame">
             <Icon name="refresh" :size="13" /> {{ chat.organizing ? '同步中…' : '更新' }}
           </button>
         </template>
         <template v-else>
-          <button class="btn btn-ghost btn-sm" :disabled="chat.compacting" @click="chat.compactContext()">
+          <button class="btn btn-ghost btn-sm" :disabled="chat.compacting" @click="chat.compactContext('game')">
             {{ chat.compacting ? '压缩中…' : '压缩' }}
           </button>
           <button class="btn btn-ghost btn-sm" :disabled="chat.organizing" @click="doSummary"><Icon name="scroll" :size="14" /> 总结</button>
@@ -338,6 +342,7 @@ async function saveCharDetail(updated: Character) {
             <Icon name="refresh" :size="13" /> {{ chat.organizing ? '同步中…' : '同步设定' }}
           </button>
         </template>
+        <ContextRing :pct="chat.ctxPressure(chat.currentStream)" :size="22" />
       </div>
     </div>
 

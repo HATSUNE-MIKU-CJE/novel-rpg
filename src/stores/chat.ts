@@ -103,6 +103,10 @@ export const useChatStore = defineStore('chat', {
       }
       return Math.round(c * 10000) / 10000
     },
+    /**
+     * 当前流上下文压力（0..1+）估算——实现见 actions.ctxPressure。
+     * （getters 不支持参数，作为 action 提供，纯计算无副作用）
+     */
   },
   actions: {
     async openCampaign(id: number) {
@@ -436,8 +440,14 @@ export const useChatStore = defineStore('chat', {
     async requestTalk(campaign: Campaign, api: ApiConfig) {
       const system = await this.buildTalkSystem()
       const msgs: ChatUserMessage[] = [{ role: 'system', content: system }]
-      for (const m of this.talkMessages) {
-        if (m.role === 'system') continue
+      // v1.8.1：交流流摘要 + 未压缩历史（与游戏流同构）
+      let history = this.talkMessages.filter((m) => m.role !== 'system')
+      const cutoff = campaign.summarizedTalkSeq ?? 0
+      if (cutoff > 0) history = history.filter((m) => (m.seq ?? 0) > cutoff)
+      if (campaign.summaryTalk) {
+        msgs.push({ role: 'system', content: `【交流记录摘要】\n${campaign.summaryTalk}` })
+      }
+      for (const m of history) {
         msgs.push({ role: m.role as 'user' | 'assistant', content: m.content })
       }
       await this.chatCompletionAndAppend(msgs, campaign, api, 'talk')
@@ -589,10 +599,10 @@ export const useChatStore = defineStore('chat', {
         campaign.lastActive = Date.now()
         await ds().saveCampaign(campaign)
 
-        // 自动上下文压缩检测（80% 预算，仅游戏流有摘要机制）
-        if (stream === 'game' && usage && campaign.ctxBudget && campaign.ctxBudget > 0) {
+        // 自动上下文压缩检测（80% 预算；两流各有摘要字段）
+        if (usage && campaign.ctxBudget && campaign.ctxBudget > 0) {
           if (usage.promptTokens > campaign.ctxBudget * COMPACT_RATIO) {
-            this.compactContext(campaign)
+            this.compactContext(stream)
           }
         }
         this.lastOpCount = opCount
@@ -802,17 +812,50 @@ export const useChatStore = defineStore('chat', {
     },
 
     /**
-     * 上下文压缩：把已压缩点之前的消息摘要为一段文本（游戏流专用）。
+     * v1.8.1：当前流上下文压力（0..1+）=（摘要 + 未压缩历史）粗估 token / 预算。
+     * 中文按 1 字 ≈ 0.6 token 粗估；预算未启用（0/缺省）返回 0。
      */
-    async compactContext(campaign?: Campaign) {
-      const c = campaign ?? this.currentCampaign
+    ctxPressure(stream: StreamKind): number {
+      const c = this.currentCampaign
+      if (!c) return 0
+      const budget = c.ctxBudget ?? 0
+      if (budget <= 0) return 0
+      const est = (t?: string) => (t ? Math.ceil(t.length * 0.6) : 0)
+      let n = 0
+      if (stream === 'talk') {
+        const cutoff = c.summarizedTalkSeq ?? 0
+        n += est(c.summaryTalk)
+        for (const m of this.talkMessages) {
+          if (m.role === 'system') continue
+          if ((m.seq ?? 0) <= cutoff) continue
+          n += est(m.content)
+        }
+      } else {
+        const cutoff = c.summarizedSeq ?? 0
+        n += est(c.summary)
+        for (const m of this.gameMessages) {
+          if (m.role === 'system') continue
+          if ((m.seq ?? 0) <= cutoff) continue
+          n += est(m.content)
+        }
+      }
+      return n / budget
+    },
+
+    /**
+     * 上下文压缩：把已压缩点之前的消息摘要为一段文本（两流各一套字段）。
+     * @param stream 目标流（默认 game）；压缩游戏流用 summary/summarizedSeq，交流流用 summaryTalk/summarizedTalkSeq。
+     */
+    async compactContext(stream: StreamKind = 'game') {
+      const c = this.currentCampaign
       if (!c || this.compacting) return
       const ds = useDataStore()
       const api = ds.getDefaultApi()
       if (!api) { this.error = '压缩需要 API 配置'; return }
 
-      const cutoff = c.summarizedSeq ?? 0
-      const toSummarize = this.gameMessages.filter((m) => (m.seq ?? 0) > cutoff && m.role !== 'system')
+      const msgs = stream === 'talk' ? this.talkMessages : this.gameMessages
+      const cutoff = stream === 'talk' ? (c.summarizedTalkSeq ?? 0) : (c.summarizedSeq ?? 0)
+      const toSummarize = msgs.filter((m) => (m.seq ?? 0) > cutoff && m.role !== 'system')
       if (toSummarize.length === 0) return
 
       // 保留最近 12 条不缩（保持细节），压缩更早的
@@ -836,14 +879,23 @@ export const useChatStore = defineStore('chat', {
         ])
 
         const newCutoff = compactArr[compactArr.length - 1].seq ?? 0
-        c.summary = summary.trim()
-        c.summarizedSeq = Math.max(c.summarizedSeq ?? 0, newCutoff)
+        if (stream === 'talk') {
+          c.summaryTalk = summary.trim()
+          c.summarizedTalkSeq = Math.max(c.summarizedTalkSeq ?? 0, newCutoff)
+        } else {
+          c.summary = summary.trim()
+          c.summarizedSeq = Math.max(c.summarizedSeq ?? 0, newCutoff)
+        }
         await ds.saveCampaign(c)
 
         // 清理被压缩的消息（保留最近 keep 条）
         const doomedIds = compactArr.map((m) => m.id!).filter(Boolean)
         if (doomedIds.length) await db.messages.bulkDelete(doomedIds)
-        this.gameMessages = this.gameMessages.filter((m) => !doomedIds.includes(m.id!))
+        if (stream === 'talk') {
+          this.talkMessages = this.talkMessages.filter((m) => !doomedIds.includes(m.id!))
+        } else {
+          this.gameMessages = this.gameMessages.filter((m) => !doomedIds.includes(m.id!))
+        }
       } catch (e: any) {
         this.error = `压缩失败：${e?.message || e}`
       } finally {
@@ -883,6 +935,8 @@ export const useChatStore = defineStore('chat', {
         const rels = await db.relations.where('campaignId').equals(this.currentCampaignId).toArray()
         const notebook = await this.ensureNotebook()
         const notebookEntries = notebook.id ? ds.entriesOf(notebook.id) : []
+        // 硬去重基线：所有非 rejected 条目（pending 也算，防反复提取）
+        const existingFacts = notebookEntries.filter((e) => e.status !== 'rejected')
         // v1.3：存档属性体系（提取维度强制 + 境界识别）
         const schema = this.attrSchema()
         const dimLabels = schema.dims.map((d) => d.label)
@@ -953,9 +1007,14 @@ export const useChatStore = defineStore('chat', {
           newRels++
         }
 
-        // 5. 写自动笔记簿条目（pending 待审阅）
+        // 5. 写自动笔记簿条目（pending 待审阅；硬去重防重复：触发词相交或正文一致即视为已有）
         let newFacts = 0
+        const seenFacts: Array<{ key?: string; content: string }> = []
         for (const f of result.facts) {
+          const dupExisting = existingFacts.some((e) => factsDup(e, f))
+          const dupSelf = seenFacts.some((s) => factsDup(s, f))
+          if (dupExisting || dupSelf) continue
+          seenFacts.push(f)
           await db.entries.add(plainMsg({
             worldbookId: notebook.id!,
             key: f.key ?? '',
@@ -1137,6 +1196,16 @@ function ds() {
 /** 触发词解析（逗号/中文逗号分隔） */
 function normalizeKeys(key?: string): string[] {
   return (key ?? '').split(/[,，]/).map((k) => k.trim()).filter(Boolean)
+}
+
+/**
+ * 判定两条事实是否重复：触发词词级相等（任一词相同）或正文完全一致。
+ * 注意不用子串匹配：「铁炉堡」≠「铁炉堡货币」，那是两条不同设定。
+ */
+function factsDup(a: { key?: string; content: string }, b: { key?: string; content: string }): boolean {
+  const ka = normalizeKeys(a.key), kb = normalizeKeys(b.key)
+  if (ka.length && kb.length && ka.some((x) => kb.includes(x))) return true
+  return (a.content ?? '').trim() === (b.content ?? '').trim()
 }
 
 /** 在笔记簿中按触发词匹配条目（相等/互相包含均命中） */

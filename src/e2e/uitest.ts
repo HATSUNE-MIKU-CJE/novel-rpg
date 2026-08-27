@@ -125,6 +125,7 @@ await page.waitForTimeout(2500)
 check('交流用户消息上屏', await page.getByText('我想玩一个矮人铁炉堡的跑团').count() > 0)
 check('交流 AI 回复上屏', await page.getByText(/这个方向很有味道/).count() > 0)
 check('交流栏不渲染 XML（无 dream_body）', await page.getByText('dream_body').count() === 0)
+check('交流栏压缩按钮存在', await page.locator('.stream-actions').getByRole('button', { name: /^压缩$/ }).count() > 0)
 
 // ---- 4.5 AI 操作协议（交流栏主持写世界书）----
 console.log('【AI 操作协议】')
@@ -323,8 +324,8 @@ check('变量查看器展开', await page.getByText('这里显示的是存档的
 console.log('【关系图】')
 await page.getByRole('button', { name: /^关系$/ }).click()
 await page.waitForTimeout(500)
-check('关系图渲染', await page.locator('svg circle').count() >= 2)
-await page.locator('svg circle').first().click()
+check('关系图渲染', await page.locator('.rel-graph svg circle').count() >= 2)
+await page.locator('.rel-graph svg circle').first().click()
 await page.waitForTimeout(500)
 check('关系图点击弹全屏角色页', await page.getByText('能力雷达').count() > 0)
 await page.getByRole('button', { name: '✕' }).click()

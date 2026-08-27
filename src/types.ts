@@ -59,6 +59,10 @@ export interface Campaign {
   summarizedSeq?: number
   /** 剧情摘要文本（压缩后的历史摘要） */
   summary?: string
+  /** v1.8.1：交流流已压缩的消息 seq 上限 */
+  summarizedTalkSeq?: number
+  /** v1.8.1：交流流摘要文本 */
+  summaryTalk?: string
   /** 统计缓存：累计 token */
   statTokens?: number
   statCostYuan?: number

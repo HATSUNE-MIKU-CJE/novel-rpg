@@ -218,6 +218,34 @@ const catDetail = ref<string | null>(null)
 const catEntries = computed(() =>
   catDetail.value ? worldGroups.value.find((x) => x.category === catDetail.value)?.entries ?? [] : [],
 )
+
+/**
+ * v1.8.1：类别内重复组（触发词归一化后相同 且 正文完全一致）。
+ * 来源：AI 提取是软去重（提示词），反复提取会写出内容一致的双胞胎。
+ */
+const dupGroups = computed(() => {
+  const groups = new Map<string, Entry[]>()
+  for (const e of catEntries.value) {
+    const key = (e.key || '').split(/[,，]/).map((k) => k.trim()).filter(Boolean).sort().join('|')
+    const sig = `${key}::${e.content.trim()}`
+    if (!groups.has(sig)) groups.set(sig, [])
+    groups.get(sig)!.push(e)
+  }
+  return Array.from(groups.values()).filter((g) => g.length > 1)
+})
+/** 重复条目总数（每组 -1 = 冗余条数） */
+const dupCount = computed(() => dupGroups.value.reduce((n, g) => n + g.length - 1, 0))
+async function cleanDupes() {
+  const total = dupCount.value
+  if (!total) return
+  if (!confirm(`将删除 ${total} 条重复设定（每组保留最新一条），确定？`)) return
+  let n = 0
+  for (const g of dupGroups.value) {
+    g.sort((a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0))
+    for (const e of g.slice(1)) if (e.id) { await ds.deleteEntry(e.id); n++ }
+  }
+  showToast(`已清理 ${n} 条重复设定`)
+}
 async function deleteCategory(cat: string) {
   const ents = worldGroups.value.find((x) => x.category === cat)?.entries ?? []
   if (!confirm(`删除「${cat}」卡将删除 ${ents.length} 条设定，确定？`)) return
@@ -324,6 +352,7 @@ async function saveSchema() {
   await chat.saveAttrSchema({
     dims: s.dims.filter((d) => d.label.trim()).map((d) => ({ label: d.label.trim() })),
     realmLabel: (s.realmLabel ?? '').trim(),
+    maxValue: Math.max(1, Math.min(100, Math.round(Number(s.maxValue) || 10))),
   })
   schemaEdit.value = false
   showToast('属性体系已保存')
@@ -601,7 +630,8 @@ function showToast(msg: string) {
         </div>
         <div class="list-sub" style="margin-bottom:6px">
           本存档的属性维度：<span v-for="d in schema.dims" :key="d.label" class="entry-tag tag-constant" style="margin:2px 3px 0 0">{{ d.label }}</span>
-          <template v-if="schema.realmLabel"> · {{ schema.realmLabel }}：{{ schema.realmLabel }}（角色单个标签，如：金丹期）</template>
+          <template v-if="schema.realmLabel"> · 境界标签：{{ schema.realmLabel }}（角色单个标签，如：金丹期）</template>
+          · 属性上限 {{ schema.maxValue }}
         </div>
 
         <!-- 编辑/建议预览 -->
@@ -615,6 +645,10 @@ function showToast(msg: string) {
           <div class="field" style="margin-top:10px">
             <label>境界标签（留空 = 不显示境界）</label>
             <input v-model="schemaDraft.realmLabel" placeholder="如：境界 / 段位" />
+          </div>
+          <div class="field" style="margin-top:10px">
+            <label>属性上限（属性值最大多少，1~100）</label>
+            <input v-model.number="schemaDraft.maxValue" type="number" min="1" max="100" placeholder="默认 10" />
           </div>
           <div style="display:flex; gap:10px; margin-top:4px">
             <button class="btn btn-ghost" style="flex:1" @click="schemaEdit = false">取消</button>
@@ -751,6 +785,13 @@ function showToast(msg: string) {
         </div>
         <button class="btn btn-warm btn-sm" @click="openNewEntryIn(catDetail)">＋ 新增条目</button>
         <button class="btn btn-ghost btn-sm" @click="catDetail = null"><Icon name="xmark" :size="14" /></button>
+      </div>
+      <div v-if="dupCount > 0" style="max-width:640px; margin:10px auto 0; padding:10px 12px; border:1px solid var(--warn); border-radius: var(--radius-sm); background: var(--warm-soft); display:flex; align-items:center; gap:8px">
+        <Icon name="warn" :size="15" style="color:var(--warn)" />
+        <span style="flex:1; font-size:12.5px; color:var(--ink)">
+          检测到 {{ dupGroups.length }} 组重复设定（共 {{ dupCount }} 条冗余）——同触发词且内容一致，通常由 AI 反复提取产生
+        </span>
+        <button class="btn btn-warm btn-sm" @click="cleanDupes">一键清理</button>
       </div>
       <div class="card" style="max-width:640px; margin:12px auto 0">
         <div v-if="!catEntries.length" class="empty-hint">这个类别还是空的 —— 点右上角新增</div>
