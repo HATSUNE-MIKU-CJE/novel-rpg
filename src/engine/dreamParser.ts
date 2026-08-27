@@ -42,9 +42,30 @@ function allTextOf(xml: string, tag: string): string[] {
 
 export function parseDreamPlot(raw: string): ParsedDream {
   const trimmed = raw.trim()
-  const isDreamPlot = /^<dream_plot[\s>]/i.test(trimmed)
+  // 允许杂质前缀（AI 偶发复述提示词/注入内容）：全文含 dream_plot 即视为合法输出
+  const isDreamPlot = /<dream_plot[\s>]/i.test(trimmed)
 
-  const body = textOf(trimmed, 'dream_body') || trimmed
+  let body = textOf(trimmed, 'dream_body')
+  if (!body) {
+    // dream_body 未闭合（AI 坏结构）→ 从 <dream_body 之后取到结尾，剥除一切 XML 标签
+    const bm = trimmed.match(/<dream_body[^>]*>([\s\S]*)/i)
+    if (bm) {
+      body = bm[1]
+        .split(/<\/?dream_plot|<\/?dream_after_format|<\/?dream_option/i)[0]
+        .replace(/<dream_scene[\s\S]*?<\/dream_scene>/gi, '')
+        .replace(/<\/?[a-zA-Z][^>]*>/g, '')
+        .trim()
+    }
+  }
+  if (body) {
+    // 统一剥除 body 内的协议标签（AI 偶发把 scene 嵌进 body）
+    body = body
+      .replace(/<dream_scene[\s\S]*?<\/dream_scene>/gi, '')
+      .replace(/<\/?dream_[a-z_]+[^>]*>/gi, '')
+      .replace(/<[a-zA-Z][^>]*>/g, '')
+      .trim()
+  }
+  if (!body) body = trimmed
   // 场景块与选项已单独提取为卡片，afterFormat 里剥除整块
   const afterFormatRaw = textOf(trimmed, 'dream_after_format')
     .replace(/<dream_scene[\s\S]*?<\/dream_scene>/gi, '')

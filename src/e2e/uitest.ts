@@ -21,11 +21,15 @@ const mock = createServer((req: IncomingMessage, res: ServerResponse) => {
   res.setHeader('Access-Control-Allow-Origin', '*')
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization')
-  if (req.method === 'OPTIONS') { res.writeHead(204); res.end(); return }
+  if (req.method === 'OPTIONS') {
+    res.setHeader('Access-Control-Allow-Private-Network', 'true')
+    res.writeHead(204); res.end(); return
+  }
   let body = ''
   req.on('data', (c) => { body += c })
   req.on('end', () => {
     const parsed = JSON.parse(body)
+    console.log('[mock] stream=', !!parsed.stream, 'lastMsg=', JSON.stringify((parsed.messages.at(-1)?.content ?? '').slice(0, 30)))
     const lastUser = parsed.messages.filter((m: any) => m.role === 'user').at(-1)
     const lines = (lastUser?.content ?? '').split('\n').filter((l: string) => l.trim())
     const echoed = lines.at(-1) ?? ''
@@ -52,6 +56,37 @@ const mock = createServer((req: IncomingMessage, res: ServerResponse) => {
       }
     } else {
       content = `<dream_plot>\n<dream_body>回应：「${echoed.slice(0, 40)}」</dream_body>\n<dream_after_format>\n<dream_done/>\n</dream_after_format>\n</dream_plot>\n[[BAR]]{"name":"艾莉丝","values":{"血条":72}}[[/BAR]]`
+    }
+
+    if (parsed.stream) {
+      // v2.1：SSE 流式模拟（分 8 块吐 + usage 尾块）
+      res.setHeader('Content-Type', 'text/event-stream')
+      res.setHeader('Cache-Control', 'no-cache')
+      res.setHeader('Connection', 'keep-alive')
+      const usage = {
+        prompt_tokens: 3200, completion_tokens: 450, total_tokens: 3650,
+        prompt_cache_hit_tokens: 2400, prompt_cache_miss_tokens: 800,
+      }
+      console.log('[mock] SSE begin, len=', content.length)
+      const chunks: string[] = []
+      const step = Math.max(1, Math.ceil(content.length / 8))
+      for (let i = 0; i < content.length; i += step) chunks.push(content.slice(i, i + step))
+      const dump = (obj: any) => res.write(`data: ${JSON.stringify(obj)}\n\n`)
+      let bi = 0
+      const timer = setInterval(() => {
+        if (bi < chunks.length) {
+          dump({ choices: [{ delta: { role: 'assistant', content: chunks[bi] } }] })
+          bi++
+        } else {
+          dump({ choices: [{ delta: {} }], usage })
+          dump({ choices: [{ delta: {}, finish_reason: 'stop' }] })
+          res.write('data: [DONE]\n\n')
+          res.end()
+          clearInterval(timer)
+        }
+      }, 30)
+      res.on('close', () => clearInterval(timer))
+      return
     }
 
     res.setHeader('Content-Type', 'application/json')

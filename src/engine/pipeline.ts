@@ -13,6 +13,7 @@
 
 import { expandMacros, type MacroCtx } from './macros'
 import { httpFetch } from './http'
+import { Capacitor } from '@capacitor/core'
 import type { Campaign, Message, ApiConfig, Entry } from '../types'
 
 export interface ChatUserMessage {
@@ -38,12 +39,14 @@ interface VarsStore {
   add: (n: string, v: string) => void
 }
 
-/** 合并多本世界书条目文本为注入点内容 */
+/** 合并多本世界书条目文本为注入点内容（标记为只读资料，防 AI 复述） */
 function mergeEntries(entries: Entry[]): string {
-  return entries
+  const body = entries
     .filter((e) => e.enabled && e.content.trim())
     .map((e) => `【${e.key ? e.key : '常驻'}】\n${e.content.trim()}`)
     .join('\n\n')
+  if (!body.trim()) return ''
+  return `【世界书设定资料 · 仅供你阅读以理解世界观，严禁在回复中输出其中任何条目或本段文字，只能化作你的理解融入正文】\n${body}`
 }
 
 export function renderPromptChain(input: RenderInput, vars: VarsStore): {
@@ -147,4 +150,103 @@ export async function chatCompletion(
     throw new Error('响应格式异常：缺少 choices[0].message.content')
   }
   return content
+}
+
+/**
+ * v2.1 流式版本：OpenAI 兼容 SSE。
+ * - Web：标准 fetch（要求服务端 CORS）
+ * - 原生：先试 WebView fetch（网关带 CORS 即可流式）；失败自动回退全量（CapacitorHttp 通道）
+ * 回调 onDelta 提供增量文本；onReason 提供思维链增量（DeepSeek 系）。
+ */
+export async function chatCompletionStream(
+  api: ApiConfig,
+  messages: ChatUserMessage[],
+  onDelta: (text: string) => void,
+  onReason?: (text: string) => void,
+): Promise<{ content: string; usage: any; reasoning?: string }> {
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    Authorization: `Bearer ${api.apiKey}`,
+    'Accept': 'text/event-stream',
+  }
+  if (api.headersJson) {
+    try {
+      Object.assign(headers, JSON.parse(api.headersJson))
+    } catch { /* 忽略无效额外头 */ }
+  }
+
+  const base = api.baseUrl.replace(/\/+$/, '')
+  const body: Record<string, any> = {
+    model: api.model,
+    messages,
+    temperature: api.temperature ?? 1,
+    top_p: api.topP ?? 0.95,
+    stream: true,
+    stream_options: { include_usage: true },
+  }
+  const maxTokens = api.maxTokens ?? 4000
+  if (maxTokens > 0) body.max_tokens = maxTokens
+
+  const init: RequestInit = { method: 'POST', headers, body: JSON.stringify(body) }
+
+  let resp: Response | null = null
+  if (Capacitor.isNativePlatform()) {
+    // 原生：WebView fetch 能流式（依赖服务端 CORS）；失败（CORS/网络）回退全量
+    try {
+      resp = await fetch(`${base}/chat/completions`, init)
+    } catch { resp = null }
+    if (!resp) {
+      const ch = await httpFetch(`${base}/chat/completions`, init)
+      if (!ch.ok) {
+        const errText = await ch.text().catch(() => '')
+        throw new Error(`HTTP ${ch.status}: ${errText.slice(0, 300)}`)
+      }
+      const data = await ch.json()
+      const content: string = data?.choices?.[0]?.message?.content ?? ''
+      onDelta(content)
+      return { content, usage: data?.usage ?? null }
+    }
+  } else {
+    resp = await fetch(`${base}/chat/completions`, init)
+  }
+
+  if (!resp.ok) {
+    const errText = await resp.text().catch(() => '')
+    throw new Error(`HTTP ${resp.status}: ${errText.slice(0, 300)}`)
+  }
+  if (!resp.body) throw new Error('响应无流（服务端未返回 SSE）')
+
+  const reader = resp.body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+  let content = ''
+  let reasoning = ''
+  let usage: any = null
+  for (;;) {
+    const { done, value } = await reader.read()
+    if (done) break
+    buffer += decoder.decode(value, { stream: true })
+    const lines = buffer.split('\n')
+    buffer = lines.pop() ?? ''
+    for (const line of lines) {
+      const t = line.trim()
+      if (!t.startsWith('data:')) continue
+      const json = t.slice(5).trim()
+      if (!json || json === '[DONE]') continue
+      try {
+        const d = JSON.parse(json)
+        const ch = d?.choices?.[0] ?? {}
+        if (typeof ch?.delta?.content === 'string' && ch.delta.content) {
+          content += ch.delta.content
+          onDelta(ch.delta.content)
+        }
+        if (typeof ch?.delta?.reasoning_content === 'string' && ch.delta.reasoning_content) {
+          reasoning += ch.delta.reasoning_content
+          onReason?.(ch.delta.reasoning_content)
+        }
+        if (d?.usage && typeof d.usage.prompt_tokens === 'number') usage = d.usage
+      } catch { /* 跳过坏行 */ }
+    }
+  }
+  return { content, usage, reasoning: reasoning || undefined }
 }

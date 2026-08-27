@@ -9,7 +9,7 @@ import Icon from '../components/Icon.vue'
 import ContextRing from '../components/ContextRing.vue'
 import OpCard from '../components/OpCard.vue'
 import type { Message, Character, StreamKind, Op, Entry } from '../types'
-import type { ParsedDream } from '../engine/dreamParser'
+import { parseDreamPlot, type ParsedDream } from '../engine/dreamParser'
 
 const ds = useDataStore()
 const chat = useChatStore()
@@ -251,6 +251,15 @@ const unorganised = computed(() => {
   if (!c || chat.currentStream !== 'talk') return 0
   const cutoff = c.lastSyncedTalkSeq ?? 0
   return chat.talkMessages.filter((m) => m.role === 'user' && (m.seq ?? 0) > cutoff).length
+})
+
+/** v2.1：流式实时正文（游戏流边收边剥 XML，只显示正文） */
+const liveBody = computed(() => {
+  if (!chat.liveText) return ''
+  if (chat.currentStream === 'game') {
+    try { return parseDreamPlot(chat.liveText).body } catch { return chat.liveText }
+  }
+  return chat.liveText
 })
 
 // ---- 章节总结 ----
@@ -521,8 +530,13 @@ async function saveCharDetail(updated: Character) {
           </div>
         </template>
 
-        <div v-if="chat.sending" class="msg-card" style="color: var(--ink-soft); font-size: 13.5px">
-          {{ chat.currentStream === 'talk' ? '思客正在思考…' : '思客正在编织梦境…' }}
+        <div v-if="chat.sending" class="msg-card" :style="liveBody ? 'color:var(--ink); font-size:13.5px' : 'color: var(--ink-soft); font-size: 13.5px'">
+          <template v-if="liveBody">
+            <span class="live-text">{{ liveBody }}</span><span class="live-caret">▍</span>
+          </template>
+          <template v-else>
+            {{ chat.currentStream === 'talk' ? '思客正在思考…' : '思客正在编织梦境…' }}
+          </template>
         </div>
         <div v-if="chat.error" class="msg-error">⚠️ {{ chat.error }}</div>
 

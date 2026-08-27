@@ -161,6 +161,17 @@ textarea { resize: vertical; min-height: 60px; }
 }
 .chat-scroll > .empty-hint { margin-top: 16px; }
 
+/* v2.1 流式输出 */
+.live-text { white-space: pre-wrap; }
+.live-caret {
+  display: inline-block;
+  width: 2px; height: 1em;
+  margin-left: 2px; vertical-align: -2px;
+  background: var(--accent);
+  animation: live-caret 0.9s infinite;
+}
+@keyframes live-caret { 0%, 100% { opacity: 1; } 50% { opacity: 0; } }
+
 /* v2.0 交流栏未整理提示横幅 */
 .extract-banner {
   display: flex;

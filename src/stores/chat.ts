@@ -3,7 +3,7 @@ import { toRaw } from 'vue'
 import { db } from '../db'
 import type { Message, Campaign, ApiConfig, Entry, StreamKind } from '../types'
 import { useDataStore } from './data'
-import { renderPromptChain, chatCompletion, type ChatUserMessage } from '../engine/pipeline'
+import { renderPromptChain, chatCompletion, chatCompletionStream, type ChatUserMessage } from '../engine/pipeline'
 import { parseDreamPlot } from '../engine/dreamParser'
 import { buildDreamPromptBlocks, defaultDreamConfig, TALK_SYSTEM, type DreamConfig } from '../engine/dreamPreset'
 import { parseUsage, estimateCostYuan } from '../engine/pricing'
@@ -60,6 +60,10 @@ export const useChatStore = defineStore('chat', {
     currentStream: 'talk' as StreamKind,
     currentCampaignId: 0,
     sending: false,
+    /** v2.1：流式输出的实时增量文本（UI 即时渲染用，完成后清零） */
+    liveText: '',
+    /** v2.1：流式思维链增量 */
+    liveReasoning: '',
     compacting: false,
     organizing: false,
     /** 上一轮交流 AI 提交的操作数（UI 提示用） */
@@ -500,7 +504,11 @@ export const useChatStore = defineStore('chat', {
       if ((campaign.summarizedSeq ?? 0) > 0) {
         history = history.filter((m) => (m.seq ?? 0) > (campaign.summarizedSeq ?? 0))
       }
-      const historyForRender = history.map((m) => ({ ...m }))
+      // v2.1：历史渲染用净化正文（防 AI 复述的杂质文本污染后续上下文）
+      const historyForRender = history.map((m) => ({
+        ...m,
+        content: m.role === 'assistant' ? (bodyOfMsg(m) || m.content) : m.content,
+      }))
       // 注入摘要为最早一段历史
       if (campaign.summary) {
         historyForRender.unshift({
@@ -540,10 +548,19 @@ export const useChatStore = defineStore('chat', {
     /** 请求 + 落库 + 统计（两流共用）；talk 流解析 AI 操作块 → 写入操作审计 */
     async chatCompletionAndAppend(msgs: ChatUserMessage[], campaign: Campaign, api: ApiConfig, stream: StreamKind): Promise<number> {
       this.sending = true
+      this.liveText = ''
+      this.liveReasoning = ''
       try {
-        const reply = await chatCompletionFull(api, msgs)
+        // v2.1 流式：SSE 增量实时上屏；原生无 CORS 时内部回退全量
+        const streamed = await chatCompletionStream(api, msgs, (delta) => {
+          this.liveText += delta
+        }, (reason) => {
+          this.liveReasoning += reason
+        })
+        this.liveText = ''
+        const reply = { content: streamed.content, reasoning: streamed.reasoning, usage: streamed.usage }
         const parsed = stream === 'game' ? parseDreamPlot(reply.content) : null
-        const usage = reply.usage
+        const usage = reply.usage ? parseUsage({ usage: reply.usage }) : null
         const cost = usage && estimateCostYuan(api.model, usage, new Date())
         const costYuan = cost?.costYuan
 
@@ -629,6 +646,8 @@ export const useChatStore = defineStore('chat', {
         return 0
       } finally {
         this.sending = false
+        this.liveText = ''
+        this.liveReasoning = ''
       }
     },
 
@@ -1293,7 +1312,7 @@ async function activeTalkEntries(c: Campaign): Promise<EntryType[]> {
 
 interface FullReply { content: string; usage: any; reasoning?: string }
 
-/** chatCompletion + usage 返回 */
+/** chatCompletion + usage 返回（v2.1 起主链路改用 chatCompletionStream，保留给非流式场景） */
 async function chatCompletionFull(api: ApiConfig, messages: ChatUserMessage[]): Promise<FullReply> {
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
