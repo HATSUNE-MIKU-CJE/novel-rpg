@@ -1,7 +1,7 @@
 import { defineStore } from 'pinia'
 import { toRaw } from 'vue'
 import { db } from '../db'
-import type { Message, Campaign, ApiConfig, Entry, StreamKind } from '../types'
+import type { Message, Campaign, ApiConfig, Entry, StreamKind, StatusCardDef } from '../types'
 import { useDataStore } from './data'
 import { renderPromptChain, chatCompletion, chatCompletionStream, type ChatUserMessage } from '../engine/pipeline'
 import { parseDreamPlot } from '../engine/dreamParser'
@@ -14,6 +14,7 @@ import {
 import { parseOps, opGroup, resolveRefs, parseBars, type OpBlock } from '../engine/ops'
 import { dedupStatus } from '../engine/dedup'
 import { parseBarSchema, barSchemaJson, readBarValues, writeBarValues, type BarSchema, type BarDef } from '../engine/bars'
+import { parseStatusCard, statusCardJson, readStatusValues, writeStatusValues, parseSnap, statusCardProtocol } from '../engine/cards'
 import { httpFetch } from '../engine/http'
 import type { WorldOverview, Entry as EntryType } from '../types'
 
@@ -214,6 +215,16 @@ export const useChatStore = defineStore('chat', {
     /** 启用的条定义 */
     barDefs(): BarDef[] {
       return this.barSchema().bars.filter((b) => b.enabled)
+    },
+    /** v2.2：状态卡配置（存档级） */
+    statusCard(): StatusCardDef {
+      return parseStatusCard(this.currentCampaign?.statusCardJson)
+    },
+    async saveStatusCard(def: StatusCardDef) {
+      const c = this.currentCampaign
+      if (!c) return
+      c.statusCardJson = statusCardJson(def)
+      await useDataStore().saveCampaign(c)
     },
 
     /** v1.3：保存属性体系 */
@@ -473,6 +484,11 @@ export const useChatStore = defineStore('chat', {
           content: `【状态条协议】本存档开启状态条（${barDefs.map((b) => b.name).join('、')}，上限各自定义，默认 100）。每轮回复末尾，若主角（第一张角色卡）状态发生变化，输出块 [[BAR]]{"name":"主角名","values":{"血条":62}}[[/BAR]]；无变化则省略。数值=当前剩余值，出负数按 0、超上限按上限。`,
         })
       }
+      // v2.2：状态卡协议（配置层启用时注入，AI 每轮自动报数）
+      const statusCardDef = this.statusCard()
+      if (statusCardDef.enabled && statusCardDef.fields.some((f) => !f.disabled)) {
+        prompts.push({ name: '状态卡协议', role: 'system', enabled: true, content: statusCardProtocol(statusCardDef) })
+      }
 
       const bindings = await db.campaignBindings.where('campaignId').equals(this.currentCampaignId).toArray()
       const wbIds = bindings.map((b) => b.worldbookId)
@@ -565,6 +581,9 @@ export const useChatStore = defineStore('chat', {
           const bars = parseBars(reply.content)
           content = bars.clean
           if (bars.updates.length) await this.applyBarUpdates(bars.updates)
+          const snap = parseSnap(content)
+          content = snap.clean
+          if (snap.updates.length) await this.applySnapUpdates(snap.updates)
         }
         const parsed = stream === 'game' ? parseDreamPlot(content) : null
         const usage = reply.usage ? parseUsage({ usage: reply.usage }) : null
@@ -709,6 +728,37 @@ export const useChatStore = defineStore('chat', {
         target.updatedAt = Date.now()
         await db.characters.put(plainMsg(target))
       }
+    },
+
+    /** v2.2：状态卡直通更新（游戏流 [[SNAP]] 直接生效，无需审计） */
+    async applySnapUpdates(updates: Array<Record<string, any>>) {
+      const c = this.currentCampaign
+      const def = this.statusCard()
+      if (!c || !def.enabled || !updates.length) return
+      const active = def.fields.filter((f) => !f.disabled)
+      const vals = readStatusValues(c.statusValuesJson)
+      for (const u of updates) {
+        for (const [label, v] of Object.entries(u)) {
+          const f = active.find((x) => x.label === label)
+          if (!f) continue
+          if (f.type === 'list') {
+            const cur = Array.isArray(vals[label]) ? (vals[label] as string[]) : []
+            if (v && typeof v === 'object') {
+              let next = Array.isArray(v.items) ? v.items.map(String) : cur
+              if (v.add) next = [...next, String(v.add)]
+              vals[label] = next
+            } else if (typeof v === 'string' && v.trim()) {
+              vals[label] = [v]
+            }
+          } else if (typeof v === 'string' && v.trim()) {
+            vals[label] = v
+          } else if (v && typeof v === 'object' && v.value) {
+            vals[label] = String(v.value)
+          }
+        }
+      }
+      c.statusValuesJson = writeStatusValues(vals)
+      await useDataStore().saveCampaign(c)
     },
 
     /** 执行操作主逻辑（确认时调用） */

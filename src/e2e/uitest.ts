@@ -29,7 +29,6 @@ const mock = createServer((req: IncomingMessage, res: ServerResponse) => {
   req.on('data', (c) => { body += c })
   req.on('end', () => {
     const parsed = JSON.parse(body)
-    console.log('[mock] stream=', !!parsed.stream, 'lastMsg=', JSON.stringify((parsed.messages.at(-1)?.content ?? '').slice(0, 30)))
     const lastUser = parsed.messages.filter((m: any) => m.role === 'user').at(-1)
     const lines = (lastUser?.content ?? '').split('\n').filter((l: string) => l.trim())
     const echoed = lines.at(-1) ?? ''
@@ -56,7 +55,7 @@ const mock = createServer((req: IncomingMessage, res: ServerResponse) => {
       }
     } else {
       // v2.1.1：游戏流回复模拟「after_format 泄漏场景」（规范复述 + 正文镜像 + BAR 塞进后置区）
-      content = `<dream_plot>\n<dream_body>回应：「${echoed.slice(0, 40)}」</dream_body>\n<dream_after_format>\n，其中可包含状态栏。\n二、辨视角：\n- 主要角色：艾莉丝。\n三、遵写规：\n- 文风：直接白话\n回应：「${echoed.slice(0, 40)}」\n[[BAR]]{"name":"艾莉丝","values":{"血条":72}}[[/BAR]]\n</dream_after_format>\n</dream_plot>`
+      content = `<dream_plot>\n<dream_body>回应：「${echoed.slice(0, 40)}」</dream_body>\n<dream_after_format>\n，其中可包含状态栏。\n二、辨视角：\n- 主要角色：艾莉丝。\n三、遵写规：\n- 文风：直接白话\n回应：「${echoed.slice(0, 40)}」\n[[BAR]]{"name":"艾莉丝","values":{"血条":72}}[[/BAR]]\n</dream_after_format>\n</dream_plot>\n[[SNAP]]{"收集物资":{"add":"旧魔法书","items":["旧魔法书"]},"体力":"60%","精神状态":"震惊但可控"}[[/SNAP]]`
     }
 
     if (parsed.stream) {
@@ -68,7 +67,6 @@ const mock = createServer((req: IncomingMessage, res: ServerResponse) => {
         prompt_tokens: 3200, completion_tokens: 450, total_tokens: 3650,
         prompt_cache_hit_tokens: 2400, prompt_cache_miss_tokens: 800,
       }
-      console.log('[mock] SSE begin, len=', content.length)
       const chunks: string[] = []
       const step = Math.max(1, Math.ceil(content.length / 8))
       for (let i = 0; i < content.length; i += step) chunks.push(content.slice(i, i + step))
@@ -293,6 +291,36 @@ await page.waitForTimeout(400)
 check('属性设定卡出现', await page.getByText('属性设定').count() > 0)
 check('血条设定卡出现', await page.getByText('血条设定').count() > 0)
 check('默认六维展示', await page.getByText('力量', { exact: true }).count() > 0)
+check('状态卡设定卡出现', await page.getByText('状态卡设定').count() > 0)
+await page.getByRole('button', { name: /示例模板/ }).click()
+await page.waitForTimeout(300)
+check('示例模板填出字段', await page.locator('.card', { hasText: '状态卡设定' }).locator('.attr-edit-row input').count() >= 4)
+await page.getByRole('button', { name: /^保存$/ }).click()
+await page.waitForTimeout(500)
+console.log('【状态卡验证】')
+await page.locator('.tabbar').getByText('对话').click()
+await page.waitForTimeout(400)
+await page.getByRole('button', { name: /^游戏/ }).click()
+await page.waitForTimeout(400)
+await page.locator('.chat-inputbar textarea').fill('再往前走走，看看丛林边缘')
+await page.locator('.send-btn').click()
+await page.waitForTimeout(2500)
+check('状态卡出现（HUD 下方）', await page.getByText('状态卡', { exact: false }).count() > 0)
+console.log('[dbg] status-card html:', (await page.locator('.status-card').first().innerText().catch(() => 'N/A')).slice(0, 300))
+const scDbg = await page.evaluate(`(async () => {
+  const req = indexedDB.open('novel-rpg')
+  const db = await new Promise((res, rej) => { req.onsuccess = () => res(req.result); req.onerror = () => rej(req.error) })
+  const camp = await new Promise((res) => { const r = db.transaction('campaigns', 'readonly').objectStore('campaigns').getAll(); r.onsuccess = () => res((r.result ?? [])[0]) })
+  return { sc: camp.statusCardJson, vals: camp.statusValuesJson }
+})()`)
+console.log('[dbg] campaign:', JSON.stringify(scDbg).slice(0, 400))
+check('状态卡物资清单渲染', await page.locator('.status-card').getByText('旧魔法书').count() > 0)
+check('状态卡体力渲染', await page.locator('.status-card').getByText('60%').count() > 0)
+check('状态卡精神状态渲染', await page.locator('.status-card').getByText('震惊但可控').count() > 0)
+await page.locator('.tabbar').getByText('面板').click()
+await page.waitForTimeout(400)
+await page.getByRole('button', { name: /^世界$/ }).click()
+await page.waitForTimeout(300)
 
 async function pendingCount(): Promise<number> {
   const m = await page.getByText(/临时区（AI 新展开 \d+ 条/).innerText()

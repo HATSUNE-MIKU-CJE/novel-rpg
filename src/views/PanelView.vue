@@ -6,11 +6,12 @@ import { useChatStore } from '../stores/chat'
 import { formatSpecMarkdown, formatSpecSchema } from '../engine/specExport'
 import { exportFile } from '../engine/exportFile'
 import { CATEGORIES, type AttrSchema } from '../engine/extractor'
+import { STATUS_CARD_TEMPLATE } from '../engine/cards'
 import { opGroup, opGroupLabel, opTitle, type OpBlock } from '../engine/ops'
 import RelationGraph from './RelationGraph.vue'
 import CharacterDetail from './CharacterDetail.vue'
 import Icon from '../components/Icon.vue'
-import type { Character, Relation, Worldbook, Entry, Op, TrashItem } from '../types'
+import type { Character, Relation, Worldbook, Entry, Op, TrashItem , StatusCardDef } from '../types'
 
 const ds = useDataStore()
 const chat = useChatStore()
@@ -330,6 +331,27 @@ async function saveBars() {
   await chat.saveBarSchema({ bars })
   refreshBarDraft()
   showToast('状态条已保存')
+}
+
+// ---- v2.2 状态卡设定（存档级） ----
+const statusDraft = ref<StatusCardDef>({ enabled: false, fields: [] })
+function refreshStatusDraft() { statusDraft.value = JSON.parse(JSON.stringify(chat.statusCard())) }
+watch(() => chat.currentCampaignId, refreshStatusDraft)
+onMounted(refreshStatusDraft)
+function addStatusField() {
+  statusDraft.value.fields.push({ id: `f${Date.now()}_${Math.random().toString(36).slice(2, 6)}`, label: '', type: 'text' })
+}
+function delStatusField(i: number) { statusDraft.value.fields.splice(i, 1) }
+function useStatusTemplate() {
+  statusDraft.value.enabled = true
+  statusDraft.value.fields = STATUS_CARD_TEMPLATE.map((f) => ({ ...f }))
+}
+async function saveStatusCard() {
+  const fields = statusDraft.value.fields.filter((f) => f.label.trim()).map((f) => ({ ...f, label: f.label.trim() }))
+  if (statusDraft.value.enabled && !fields.length) { showToast('启用状态卡至少需要一个字段'); return }
+  await chat.saveStatusCard({ enabled: statusDraft.value.enabled, fields })
+  refreshStatusDraft()
+  showToast('状态卡已保存')
 }
 
 async function refreshPending() {
@@ -760,6 +782,30 @@ function showToast(msg: string) {
         <div style="display:flex; gap:8px; margin-top:6px">
           <button class="btn btn-soft btn-sm" style="flex:1" @click="addBar">＋ 自定义条</button>
           <button class="btn btn-primary btn-sm" style="flex:1" @click="saveBars">应用</button>
+        </div>
+      </div>
+
+      <!-- v2.2 状态卡设定（存档级） -->
+      <div class="card" style="margin-bottom:12px">
+        <b style="margin-bottom:6px; display:block"><Icon name="clipboard" :size="15" /> 状态卡设定（存档级）</b>
+        <div class="list-sub" style="margin-bottom:8px">
+          游戏流正文下方的状态卡：注册字段后 AI 每轮自动报数更新，无需手动同步；「清单」字段显示为列表并随剧情追加。
+        </div>
+        <label style="display:flex; align-items:center; gap:6px; font-size:13px; margin-bottom:8px">
+          <input type="checkbox" v-model="statusDraft.enabled" style="width:auto" /> 启用状态卡（关闭时 AI 不报数、不显示）
+        </label>
+        <div v-for="(f, i) in statusDraft.fields" :key="f.id" class="attr-edit-row">
+          <select v-model="f.type" style="width:70px; padding:4px">
+            <option value="text">单行</option>
+            <option value="list">清单</option>
+          </select>
+          <input v-model="f.label" placeholder="字段名（如：收集物资）" style="flex:1" />
+          <button class="btn btn-danger btn-sm" @click="delStatusField(i)"><Icon name="xmark" :size="12" /></button>
+        </div>
+        <div style="display:flex; gap:8px; margin-top:6px">
+          <button class="btn btn-soft btn-sm" style="flex:1" @click="useStatusTemplate"><Icon name="sparkle" :size="12" /> 示例模板</button>
+          <button class="btn btn-soft btn-sm" style="flex:1" @click="addStatusField">＋ 字段</button>
+          <button class="btn btn-primary btn-sm" style="flex:1" @click="saveStatusCard">保存</button>
         </div>
       </div>
 

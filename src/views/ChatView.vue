@@ -10,6 +10,7 @@ import ContextRing from '../components/ContextRing.vue'
 import OpCard from '../components/OpCard.vue'
 import type { Message, Character, StreamKind, Op, Entry } from '../types'
 import { parseDreamPlot, type ParsedDream } from '../engine/dreamParser'
+import { readStatusValues } from '../engine/cards'
 
 const ds = useDataStore()
 const chat = useChatStore()
@@ -262,6 +263,25 @@ const liveBody = computed(() => {
   return chat.liveText
 })
 
+/** v2.2：状态卡展示数据（血条 HUD 下方；无值字段隐藏） */
+const statusCardState = computed(() => {
+  const c = chat.currentCampaign
+  const def = chat.statusCard()
+  if (!c || !def.enabled) return null
+  const vals = readStatusValues(c.statusValuesJson)
+  const rows = def.fields
+    .filter((f) => !f.disabled)
+    .map((f) => {
+      const v = vals[f.label]
+      const text = f.type === 'list'
+        ? (Array.isArray(v) ? v.join(' · ') : (v ? String(v) : ''))
+        : (typeof v === 'string' ? v : '')
+      return { label: f.label, text }
+    })
+    .filter((x) => x.text)
+  return rows.length ? rows : null
+})
+
 // ---- 章节总结 ----
 async function doSummary() {
   const s = await chat.generateSummary()
@@ -421,6 +441,15 @@ async function saveCharDetail(updated: Character) {
             <div class="bar-fill" :style="{ width: Math.min(100, (b.value / b.max) * 100) + '%', background: b.color }"></div>
           </div>
           <span class="hud-val">{{ b.value }}/{{ b.max }}</span>
+        </div>
+      </div>
+
+      <!-- v2.2 状态卡（游戏流 HUD，AI 每轮自动更新） -->
+      <div v-if="chat.currentStream === 'game' && statusCardState" class="status-card">
+        <div class="status-card-head"><Icon name="clipboard" :size="13" /> 状态卡</div>
+        <div v-for="s in statusCardState" :key="s.label" class="status-row">
+          <span class="status-label">{{ s.label }}</span>
+          <span class="status-val">{{ s.text }}</span>
         </div>
       </div>
 

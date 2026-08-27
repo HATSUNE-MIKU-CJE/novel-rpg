@@ -88,6 +88,10 @@ export interface Campaign {
   worldOverviewJson?: string
   /** v1.8：状态条配置（BarSchema JSON：bars 模板列表） */
   barSchemaJson?: string
+  /** v2.2：状态卡配置（StatusCardDef JSON：字段注册表+开关） */
+  statusCardJson?: string
+  /** v2.2：状态卡当前值（Record<string, string | string[]> JSON，AI 每轮直通更新） */
+  statusValuesJson?: string
   createdAt: number
   updatedAt: number
   lastActive: number
@@ -203,4 +207,22 @@ export interface TrashItem {
   /** 删除标题（展示用） */
   title: string
   deletedAt: number
+}
+
+// ---------------- 状态卡（v2.2） ----------------
+/** 状态卡字段：单行（text）或 清单（list） */
+export interface StatusCardField {
+  id: string
+  /** 显示名/AI 报数键（两者一致） */
+  label: string
+  /** text=单行文本；list=物品/事件清单（支持追加） */
+  type: 'text' | 'list'
+  /** v2.2：字段级停用 */
+  disabled?: boolean
+}
+
+export interface StatusCardDef {
+  /** 整卡开关（关 = 不注入协议、不解析、不显示） */
+  enabled: boolean
+  fields: StatusCardField[]
 }
