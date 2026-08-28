@@ -7,6 +7,7 @@ import { formatSpecMarkdown, formatSpecSchema } from '../engine/specExport'
 import { exportFile } from '../engine/exportFile'
 import { CATEGORIES, type AttrSchema } from '../engine/extractor'
 import { STATUS_CARD_TEMPLATE } from '../engine/cards'
+import { looksLikeSpecText } from '../engine/dreamParser'
 import { opGroup, opGroupLabel, opTitle, type OpBlock } from '../engine/ops'
 import RelationGraph from './RelationGraph.vue'
 import CharacterDetail from './CharacterDetail.vue'
@@ -215,6 +216,17 @@ function catSummary(cat: string): string {
   const first = g?.entries[0]
   return first ? `${first.content.slice(0, 70)}${first.content.length > 70 ? '…' : ''}` : ''
 }
+
+/** v2.1.2：疑似「写作规范」条目（AI 会反复复述 → 建议停用/移出注入） */
+const specLikeEntries = computed<Entry[]>(() => {
+  const out: Entry[] = []
+  for (const e of ds.entries) {
+    if (e.source === 'ai' && e.status !== 'accepted') continue
+    if (!e.enabled || !e.content.trim()) continue
+    if (looksLikeSpecText(e.content)) out.push(e)
+  }
+  return out
+})
 
 /** 类别卡详情（全屏） */
 const catDetail = ref<string | null>(null)
@@ -714,6 +726,24 @@ function showToast(msg: string) {
 
     <!-- ===== 世界 ===== -->
     <div v-if="tab === 'world'">
+      <!-- v2.1.2 疑似写作规范条目提示（根因引导：这类条目被 AI 反复复述） -->
+      <div v-if="specLikeEntries.length" class="card" style="margin-bottom:12px; border:1px solid var(--danger); padding:10px 12px">
+        <div style="display:flex; align-items:center; gap:8px">
+          <Icon name="warn" :size="15" style="color:var(--danger)" />
+          <b style="flex:1; font-size:13px">发现 {{ specLikeEntries.length }} 条疑似「写作规范」条目</b>
+        </div>
+        <div class="list-sub" style="margin-top:4px">
+          这类内容被当作设定注入对话后，AI 会在回复里反复复述它（就是聊天里那些「二、辨视角…」乱码的来源）。
+          建议：停用或删除（写作守则应放在预设开关里，而不是世界书条目）。点下面条目卡可直接操作。
+        </div>
+        <div v-for="e in specLikeEntries.slice(0, 3)" :key="e.id" class="entry-item" style="padding:6px 0">
+          <span class="entry-tag tag-danger">{{ e.key ? e.key.split(/[,，]/)[0].slice(0, 8) : '常驻' }}</span>
+          <div style="flex:1; min-width:0" class="list-sub">{{ e.content.slice(0, 50) }}</div>
+          <button class="btn btn-ghost btn-sm" @click="openEdit(e)">编</button>
+          <button class="btn btn-ghost btn-sm" @click="toggleEntryEnabled(e)">{{ e.enabled ? '停' : '启' }}</button>
+        </div>
+      </div>
+
       <!-- v2.0 回收站（删除可撤销） -->
       <div v-if="ds.trashed.length" class="card" style="margin-bottom:12px; border:1px solid var(--line)">
         <div style="display:flex; align-items:center; gap:8px">

@@ -65,6 +65,8 @@ export function parseDreamPlot(raw: string): ParsedDream {
       .replace(/<[a-zA-Z][^>]*>/g, '')
       .replace(/\[\[BAR\]\][\s\S]*?\[\/BAR\]/gi, '')
       .trim()
+    // v2.1.2：body 内部的规范复述/碎片清洗（AI 把写作规范塞进正文前/后）
+    body = stripBodyLeak(body)
   }
   if (!body) body = trimmed
   // 场景块与选项已单独提取为卡片，afterFormat 里剥除整块
@@ -106,4 +108,36 @@ function cleanAfterFormat(raw: string): string {
   if (t.length > 280) return ''
   if (AFTER_LEAK_RE.test(t)) return ''
   return t
+}
+
+// v2.1.2：body 内「写作规范复述」锚点（出现即视为复述区起点）
+const LEAK_ANCHOR_RE = /(正文前需要|在正文前|辨视角|遵写规|演叙事|前尘已定|梦境将演|其中可包含|当前收集物资|当前状态[:：]|字数约|人称第三|信息差[:：]|文风[:：]|转述不抢话|制造挑战|事件推进链|禁词|破折号|，其中可包含)/
+/** 开头碎片行：孤立反引号+mumble 单字/短词（AI 输出 markdown 或复述残留） */
+const LEAK_HEAD_LINE_RE = /^[`'"“”‘’]\s*[\u4e00-\u9fa5]{0,8}\s*[`'"“”‘’]?\s*[。.]?\s*$/
+
+/** v2.1.2：内容疑似「写作规范/设定指南」文本（AI 会反复复述它；供面板诊断提示） */
+export function looksLikeSpecText(content?: string): boolean {
+  if (!content) return false
+  return LEAK_ANCHOR_RE.test(content)
+}
+
+/**
+ * 清洗 body 内部复述：
+ *  - 开头连续碎片行（≤3 行：含锚点关键词或孤立反引号碎片）→ 剥离
+ *  - 正文之后的锚点（「二、辨视角」「当前状态」等）→ 截断
+ */
+function stripBodyLeak(body: string): string {
+  const lines = body.split('\n')
+  let start = 0
+  while (start < Math.min(3, lines.length)) {
+    const t = lines[start].trim()
+    if (!t) { start++; continue }
+    if (LEAK_ANCHOR_RE.test(t) || LEAK_HEAD_LINE_RE.test(t)) start++
+    else break
+  }
+  let rest = start > 0 ? lines.slice(start).join('\n') : body
+  // 中部锚点截断（只处理正文后的长复述；容忍「二、」「（一）」等汉字数字前缀）
+  const m = rest.match(/[\s\n]+(?:(?:[\d一二三四五六七八九十]+)[、.．]\s*)?(正文前需要|在正文前|辨视角|遵写规|演叙事|前尘已定|梦境将演|其中可包含|当前收集物资|当前状态[:：])/)
+  if (m && m.index !== undefined) rest = rest.slice(0, m.index).trim()
+  return rest.trim()
 }

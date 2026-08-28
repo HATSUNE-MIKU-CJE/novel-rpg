@@ -55,7 +55,8 @@ const mock = createServer((req: IncomingMessage, res: ServerResponse) => {
       }
     } else {
       // v2.1.1：游戏流回复模拟「after_format 泄漏场景」（规范复述 + 正文镜像 + BAR 塞进后置区）
-      content = `<dream_plot>\n<dream_body>回应：「${echoed.slice(0, 40)}」</dream_body>\n<dream_after_format>\n，其中可包含状态栏。\n二、辨视角：\n- 主要角色：艾莉丝。\n三、遵写规：\n- 文风：直接白话\n回应：「${echoed.slice(0, 40)}」\n[[BAR]]{"name":"艾莉丝","values":{"血条":72}}[[/BAR]]\n</dream_after_format>\n</dream_plot>\n[[SNAP]]{"收集物资":{"add":"旧魔法书","items":["旧魔法书"]},"体力":"60%","精神状态":"震惊但可控"}[[/SNAP]]`
+      // v2.1.2：body 内部复述（开头碎片 + 尾部规范）+ after_format 泄漏 + SNAP
+      content = `<dream_plot>\n<dream_body>\`和\`。\n- 正文前需要\`\n回应：「${echoed.slice(0, 40)}」\n二、辨视角：\n- 主要角色：艾莉丝。\n三、遵写规：\n- 文风：直接白话\n当前状态：\n- 体力：60%\n</dream_body>\n<dream_after_format>\n，其中可包含状态栏。\n[[BAR]]{"name":"艾莉丝","values":{"血条":72}}[[/BAR]]\n</dream_after_format>\n</dream_plot>\n[[SNAP]]{"收集物资":{"add":"旧魔法书","items":["旧魔法书"]},"体力":"60%","精神状态":"震惊但可控"}[[/SNAP]]`
     }
 
     if (parsed.stream) {
