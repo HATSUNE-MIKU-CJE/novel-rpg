@@ -583,7 +583,7 @@ export const useChatStore = defineStore('chat', {
           if (bars.updates.length) await this.applyBarUpdates(bars.updates)
           const snap = parseSnap(content)
           content = snap.clean
-          if (snap.updates.length) await this.applySnapUpdates(snap.updates)
+          if (snap.updates.length) await this.applySnapUpdates(snap.updates, campaign)
         }
         const parsed = stream === 'game' ? parseDreamPlot(content) : null
         const usage = reply.usage ? parseUsage({ usage: reply.usage }) : null
@@ -643,6 +643,7 @@ export const useChatStore = defineStore('chat', {
           campaign.statTokens = (campaign.statTokens ?? 0) + usage.totalTokens
           if (costYuan) campaign.statCostYuan = (campaign.statCostYuan ?? 0) + costYuan
         }
+
         campaign.lastActive = Date.now()
         await ds().saveCampaign(campaign)
 
@@ -731,8 +732,8 @@ export const useChatStore = defineStore('chat', {
     },
 
     /** v2.2：状态卡直通更新（游戏流 [[SNAP]] 直接生效，无需审计） */
-    async applySnapUpdates(updates: Array<Record<string, any>>) {
-      const c = this.currentCampaign
+    async applySnapUpdates(updates: Array<Record<string, any>>, campaign?: Campaign) {
+      const c = campaign ?? this.currentCampaign
       const def = this.statusCard()
       if (!c || !def.enabled || !updates.length) return
       const active = def.fields.filter((f) => !f.disabled)
@@ -745,7 +746,7 @@ export const useChatStore = defineStore('chat', {
             const cur = Array.isArray(vals[label]) ? (vals[label] as string[]) : []
             if (v && typeof v === 'object') {
               let next = Array.isArray(v.items) ? v.items.map(String) : cur
-              if (v.add) next = [...next, String(v.add)]
+              if (v.add && !next.includes(String(v.add))) next = [...next, String(v.add)]
               vals[label] = next
             } else if (typeof v === 'string' && v.trim()) {
               vals[label] = [v]
@@ -758,7 +759,8 @@ export const useChatStore = defineStore('chat', {
         }
       }
       c.statusValuesJson = writeStatusValues(vals)
-      await useDataStore().saveCampaign(c)
+      await db.campaigns.put(plainMsg(c))
+      await useDataStore().loadAll()
     },
 
     /** 执行操作主逻辑（确认时调用） */

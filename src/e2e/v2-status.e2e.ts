@@ -32,7 +32,11 @@ const mock = createServer((req: IncomingMessage, res: ServerResponse) => {
     } else if (sysText.includes('游戏设计主持')) {
       content = '好，这个方向很有味道。'
     } else {
-      content = '<dream_plot><dream_body>回应：「' + (parsed.messages.filter((m: any) => m.role === 'user').at(-1)?.content ?? '').slice(-20) + '」</dream_body></dream_plot>\n[[SNAP]]{"收集物资":{"add":"旧魔法书","items":["旧魔法书"]},"体力":"60%","精神状态":"震惊但可控"}[[/SNAP]]'
+      const lastUser = (parsed.messages.filter((m: any) => m.role === 'user').at(-1)?.content ?? '').slice(-20)
+      const snap = lastUser.includes('木棍')
+        ? '[[SNAP]]{"收集物资":{"add":"木棍","items":["旧魔法书","木棍"]},"体力":"55%"}[[/SNAP]]'
+        : '[[SNAP]]{"收集物资":{"add":"旧魔法书","items":["旧魔法书"]},"体力":"60%","精神状态":"震惊但可控"}[[/SNAP]]'
+      content = '<dream_plot><dream_body>回应：「' + lastUser + '」</dream_body></dream_plot>\n' + snap
     }
     if (parsed.stream) {
       res.setHeader('Content-Type', 'text/event-stream')
@@ -114,7 +118,7 @@ const scDbg = await page.evaluate(`(async () => {
   const db = await new Promise((res, rej) => { req.onsuccess = () => res(req.result); req.onerror = () => rej(req.error) })
   const camp = await new Promise((res) => { const r = db.transaction('campaigns', 'readonly').objectStore('campaigns').getAll(); r.onsuccess = () => res((r.result ?? [])[0]) })
   const all = await new Promise((res) => { const r = db.transaction('campaigns', 'readonly').objectStore('campaigns').getAll(); r.onsuccess = () => res(r.result ?? []) })
-  return { all: all.map((x: any) => ({ id: x.id, name: x.name, sc: x.statusCardJson ? 'Y' : 'N', vals: x.statusValuesJson ? 'Y' : 'N' })), sc: camp.statusCardJson, vals: camp.statusValuesJson }
+  return { all: all.map((x) => ({ id: x.id, name: x.name, sc: x.statusCardJson ? 'Y' : 'N', vals: x.statusValuesJson ? 'Y' : 'N' })), sc: camp.statusCardJson, vals: camp.statusValuesJson }
 })()`)
 console.log('[dbg] campaigns:', JSON.stringify(scDbg))
 console.log('[dbg] hud html:', (await page.locator('.hud-bars').innerText().catch(() => 'N/A')).slice(0, 200))
@@ -127,7 +131,7 @@ check('SNAP 块不上屏', await page.getByText('[[SNAP]]').count() === 0)
 await page.locator('.chat-inputbar textarea').fill('捡到一根木棍')
 await page.locator('.send-btn').click()
 await page.waitForTimeout(2500)
-check('第二轮后清单含旧物品+新物品', (await page.locator('.status-card').innerText()).includes('旧魔法书') && (await page.locator('.status-card').innerText()).includes('木棍'), (await page.locator('.status-card').innerText().catch(() => 'N/A')).slice(0, 150))
+check('第二轮后清单含旧物品+新物品', (await page.locator('.status-card').innerText()).includes('旧魔法书') && (await page.locator('.status-card').innerText()).includes('木棍'), (await page.locator('.status-card').innerText().catch(() => 'N/A')).slice(0, 200))
 
 console.log(`\n结果：${pass} 通过 / ${fail} 失败`)
 await browser.close()

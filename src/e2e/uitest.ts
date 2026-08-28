@@ -358,7 +358,7 @@ console.log('【属性建议】')
 await page.getByRole('button', { name: /按交流建议/ }).click()
 await page.waitForTimeout(2500)
 check('建议维度填入编辑区', await page.locator('input[placeholder="维度名"]').count() >= 4)
-await page.getByRole('button', { name: '保存' }).click()
+await page.locator('.opt-detail').getByRole('button', { name: '保存' }).click()
 await page.waitForTimeout(400)
 check('保存后显示新维度（体魄）', await page.getByText('体魄', { exact: true }).count() > 0)
 
