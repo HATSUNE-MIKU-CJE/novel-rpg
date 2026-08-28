@@ -11,6 +11,31 @@ function plain<T>(obj: T): T {
   return JSON.parse(JSON.stringify(toRaw(obj)))
 }
 
+/**
+ * 引用稳定化合并：以旧数组中的对象为基底，把新数据字段合并进去。
+ * 新 id 追加、消失的 id 剔除（对 trash/campaigns 按删除语义处理）。
+ * 保留引用 → 外部持有的旧引用始终与 store 同步。
+ */
+function mergeById<T extends { id?: number }>(oldArr: T[], newArr: T[]): T[] {
+  if (!newArr.length) return []
+  const oldMap = new Map<number, T>()
+  for (const o of oldArr) if (o.id != null) oldMap.set(o.id, o)
+  const merged: T[] = []
+  const seen = new Set<number>()
+  for (const n of newArr) {
+    if (n.id == null) { merged.push(n); continue }
+    seen.add(n.id)
+    const o = oldMap.get(n.id)
+    if (o && typeof o === 'object' && typeof n === 'object') {
+      Object.assign(o, n)
+      merged.push(o)
+    } else {
+      merged.push(n)
+    }
+  }
+  return merged
+}
+
 export const useDataStore = defineStore('data', {
   state: () => ({
     apiConfigs: [] as ApiConfig[],
@@ -23,6 +48,13 @@ export const useDataStore = defineStore('data', {
     loaded: false,
   }),
   actions: {
+    /**
+     * 引用稳定化加载：新数据「合并回既有对象」而非整体替换数组。
+     * 背景：旧实现每次 loadAll 都换新对象引用，任何持有旧引用的异步流程
+     * （syncFrom/compactContext 等的 campaign 变量）在末尾 saveCampaign 时
+     * 会把其它流程刚写入库的新字段覆盖回旧值——表现为「属性/状态卡数据莫名其妙丢失」。
+     * 稳定引用后，旧引用与 store 共享同一对象，字段永远同步。
+     */
     async loadAll() {
       const [apiConfigs, presets, worldbooks, entries, campaigns, trashed] = await Promise.all([
         db.apiConfigs.toArray(),
@@ -32,12 +64,12 @@ export const useDataStore = defineStore('data', {
         db.campaigns.toArray(),
         db.trash.orderBy('deletedAt').reverse().limit(20).toArray(),
       ])
-      this.apiConfigs = apiConfigs
-      this.presets = presets
-      this.worldbooks = worldbooks
-      this.entries = entries
-      this.campaigns = campaigns
-      this.trashed = trashed
+      this.apiConfigs = mergeById(this.apiConfigs, apiConfigs)
+      this.presets = mergeById(this.presets, presets)
+      this.worldbooks = mergeById(this.worldbooks, worldbooks)
+      this.entries = mergeById(this.entries, entries)
+      this.campaigns = mergeById(this.campaigns, campaigns)
+      this.trashed = mergeById(this.trashed, trashed)
       this.loaded = true
     },
 

@@ -45,8 +45,12 @@ check('维度上限 12', parseAttrSchema(JSON.stringify({ dims: Array.from({ len
 
 console.log('【类别归一 & 提示词】')
 check('合法类别', normCategory('修炼体系') === '修炼体系')
-check('非法类别 → 其他', normCategory('乱写') === '其他')
+check('宽放：合理新类别保留', normCategory('梦境规则') === '梦境规则')
+check('超长类别 → 其他', normCategory('这是一个特别特别特别长的类别') === '其他')
+check('含符号类别 → 其他', normCategory('地理<环境>') === '其他')
 check('空类别 → 其他', normCategory(undefined) === '其他')
+check('候选内保留（含候选外的）', normCategory('梦境规则', ['修炼体系', '梦境规则']) === '梦境规则')
+check('候选外合理新类别也保留', normCategory('都市异闻', ['修炼体系']) === '都市异闻')
 const sp = makeSystemPrompt(['力量', '敏捷'], '境界')
 check('提示词含维度', sp.includes('「力量、敏捷」') && sp.includes('境界'))
 const sp2 = makeSystemPrompt([], '')

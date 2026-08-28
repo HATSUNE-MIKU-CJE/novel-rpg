@@ -76,5 +76,5 @@ export function parseSnap(text: string): { clean: string; updates: Array<Record<
 export function statusCardProtocol(def: StatusCardDef): string {
   const active = def.fields.filter((f) => !f.disabled)
   const desc = active.map((f) => `${f.label}（${f.type === 'list' ? '清单' : '单行'}）`).join('、')
-  return `【状态卡协议】本存档开启状态卡，字段：${desc}。每轮回复末尾，若其中字段发生变化，输出块 [[SNAP]]{"${active[0]?.label ?? '字段'}": <值>}[[/SNAP]]（可同时带多个字段）；无变化则省略。清单字段：值用 {"add":"新增一项","items":["当前全量清单"]}（先 items 覆盖再 add 追加）；单行字段：值直接给字符串。数值必须如实反映当前状态，不得编造。`
+  return `【状态卡协议】本存档开启状态卡，字段：${desc}。每轮回复末尾，若其中字段发生变化，输出块 [[SNAP]]{"${active[0]?.label ?? '字段'}": <值>}[[/SNAP]]（可同时带多个字段）；无变化则省略。清单字段：值用 {"add":"新增一项"} 追加，或用 {"remove":"一项"} 移除；不要输出整组清单，遗漏会丢数据。单行字段：值直接给字符串。数值必须如实反映当前状态，不得编造。`
 }

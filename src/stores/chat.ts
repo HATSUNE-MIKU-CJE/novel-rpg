@@ -9,6 +9,7 @@ import { buildDreamPromptBlocks, defaultDreamConfig, TALK_SYSTEM, type DreamConf
 import { parseUsage, estimateCostYuan } from '../engine/pricing'
 import {
   extractFacts, extractJson, mergeAttrs, applyRenames, normCategory,
+  collectCategoryCandidates,
   parseAttrSchema, attrSchemaJson, type AttrSchema,
 } from '../engine/extractor'
 import { parseOps, opGroup, resolveRefs, parseBars, type OpBlock } from '../engine/ops'
@@ -327,6 +328,15 @@ export const useChatStore = defineStore('chat', {
       const parts = [TALK_SYSTEM]
       if (c?.id) {
         const entries = await activeTalkEntries(c)
+        // v2.2.1：类别候选动态化——主持人格的 [[WB]] 操作类别枚举跟着存档走
+        const usedCats = ds.entries
+          .map((e) => e.category)
+          .filter((x): x is string => !!x && x !== '其他')
+        const catLine = collectCategoryCandidates(usedCats).join('、')
+        parts[0] = TALK_SYSTEM.replace(
+          'category 从「修炼体系/经济系统/地理环境/种族文化/组织势力/物品神器/其他」选',
+          `category 从「${catLine}」选`,
+        )
         const lines = entries.map((e, i) => `【${i + 1}】${e.category || '其他'}·${e.key || '常驻'}：${e.content}`)
         const chars = await db.characters.where('campaignId').equals(c.id!).toArray()
         const charText = chars.map((ch) => `【角色卡 · ${ch.name}】${ch.identity ? ch.identity + '。' : ''}${ch.description ?? ''}`.trim()).join('\n')
@@ -743,13 +753,22 @@ export const useChatStore = defineStore('chat', {
           const f = active.find((x) => x.label === label)
           if (!f) continue
           if (f.type === 'list') {
+            // v2.2.1：增量语义（add/remove），杜绝全量覆盖丢数据；
+            // 兼容旧协议 items（仅当为空时接受，非空时忽略防覆盖）
             const cur = Array.isArray(vals[label]) ? (vals[label] as string[]) : []
             if (v && typeof v === 'object') {
-              let next = Array.isArray(v.items) ? v.items.map(String) : cur
+              let next = cur
+              if (Array.isArray(v.items) && v.items.length && !cur.length) next = v.items.map(String)
               if (v.add && !next.includes(String(v.add))) next = [...next, String(v.add)]
+              if (v.remove) {
+                const rm = Array.isArray(v.remove) ? v.remove.map(String) : [String(v.remove)]
+                next = next.filter((x) => !rm.includes(x))
+              }
               vals[label] = next
             } else if (typeof v === 'string' && v.trim()) {
-              vals[label] = [v]
+              // 旧协议兜底：字符串当新增一项（去重）
+              const item = v.trim()
+              vals[label] = cur.includes(item) ? cur : [...cur, item]
             }
           } else if (typeof v === 'string' && v.trim()) {
             vals[label] = v
@@ -1038,6 +1057,10 @@ export const useChatStore = defineStore('chat', {
           recentText: text,
           attrDims: dimLabels,
           realmLabel: schema.realmLabel ?? '',
+          // v2.2.1：存档已用类别（含用户自定义）→ 提取时优先沿用，不再全堆「其他」
+          categoryCandidates: notebookEntries
+            .map((e) => e.category)
+            .filter((c): c is string => !!c && c !== '其他'),
         })
 
         // 0. 角色改名/合并：先把旧卡名更正（关系两端同步迁移），后续写入按新名匹配

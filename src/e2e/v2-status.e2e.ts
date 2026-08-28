@@ -34,8 +34,8 @@ const mock = createServer((req: IncomingMessage, res: ServerResponse) => {
     } else {
       const lastUser = (parsed.messages.filter((m: any) => m.role === 'user').at(-1)?.content ?? '').slice(-20)
       const snap = lastUser.includes('木棍')
-        ? '[[SNAP]]{"收集物资":{"add":"木棍","items":["旧魔法书","木棍"]},"体力":"55%"}[[/SNAP]]'
-        : '[[SNAP]]{"收集物资":{"add":"旧魔法书","items":["旧魔法书"]},"体力":"60%","精神状态":"震惊但可控"}[[/SNAP]]'
+        ? '[[SNAP]]{"收集物资":{"add":"木棍"},"体力":"55%"}[[/SNAP]]'
+        : '[[SNAP]]{"收集物资":{"add":"旧魔法书"},"体力":"60%","精神状态":"震惊但可控"}[[/SNAP]]'
       content = '<dream_plot><dream_body>回应：「' + lastUser + '」</dream_body></dream_plot>\n' + snap
     }
     if (parsed.stream) {

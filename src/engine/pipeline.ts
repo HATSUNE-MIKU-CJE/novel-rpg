@@ -14,6 +14,7 @@
 import { expandMacros, type MacroCtx } from './macros'
 import { httpFetch } from './http'
 import { Capacitor } from '@capacitor/core'
+import { isStreamBridgeAvailable, nativeChatStream } from './streamBridge'
 import type { Campaign, Message, ApiConfig, Entry } from '../types'
 
 export interface ChatUserMessage {
@@ -191,7 +192,18 @@ export async function chatCompletionStream(
 
   let resp: Response | null = null
   if (Capacitor.isNativePlatform()) {
-    // 原生：WebView fetch 能流式（依赖服务端 CORS）；失败（CORS/网络）回退全量
+    // v2.2.1：优先原生流式桥（无 CORS 限制，真机流式根治）→ WebView fetch（带 CORS 的网关）→ CapacitorHttp 全量
+    try {
+      if (isStreamBridgeAvailable()) {
+        return await nativeChatStream({
+          url: `${base}/chat/completions`,
+          headers,
+          body: JSON.stringify(body),
+          onDelta,
+          onReason,
+        })
+      }
+    } catch { /* 桥不可用/失败 → 落回 WebView fetch */ }
     try {
       resp = await fetch(`${base}/chat/completions`, init)
     } catch { resp = null }

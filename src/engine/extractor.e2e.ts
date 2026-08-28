@@ -25,8 +25,8 @@ const mockReply = `好的，以下是我提取的内容：
   ],
   "facts": [
     {"key": "铁炉堡,东境", "content": "铁炉堡东境最近出现了狼群，商队开始绕路。", "category": "地理环境"},
-    {"key": "", "content": "王族徽记是敲击的锤子与铁砧交叉图案。", "category": "乱写的类别"},
-    {"key": "旧魔法书", "content": "艾莉丝的旧魔法书疑似来自王室。"}
+    {"key": "", "content": "王族徽记是敲击的锤子与铁砧交叉图案。", "category": "这真的是一个特别长且没意义的类别名称测试"},    {"key": "旧魔法书", "content": "艾莉丝的旧魔法书疑似来自王室。"},
+    {"key": "梦境雕像", "content": "梦境入口处立着一座星空雕像。", "category": "梦境景观"}
   ]
 }
 \`\`\`
@@ -67,15 +67,16 @@ const result = await extractFacts(api, {
 })
 check('角色提取 ×2', result.characters.length === 2, `got ${result.characters.length}`)
 check('关系提取', result.relations.length === 1 && result.relations[0].relType === '敌人')
-check('事实提取 ×3', result.facts.length === 3, `got ${result.facts.length}`)
+check('事实提取 ×4', result.facts.length === 4, `got ${result.facts.length}`)
 check('常驻事实（key 空）', result.facts.some((f) => f.key === ''))
 check('触发事实带 key', result.facts.some((f) => f.key.includes('铁炉堡')))
 check('属性提取：武力钳到 10', result.characters[0].attributes?.find((a) => a.label === '武力')?.value === 10)
 check('属性提取：9.3 四舍五入 9', result.characters[1].attributes?.find((a) => a.label === '力量')?.value === 9)
 check('属性提取：空 label 被过滤', result.characters[1].attributes?.length === 1)
 check('境界保留', result.characters[0].realm === '炼气三层')
-check('非法类别归其他', result.facts.find((f) => f.key === '')?.category === '其他')
+check('超长类别归其他', result.facts.find((f) => f.key === '')?.category === '其他')
 check('合法类别保留', result.facts.find((f) => f.key.includes('铁炉堡'))?.category === '地理环境')
+check('宽放：合理新类别保留（梦境景观）', result.facts.find((f) => f.key.includes('梦境雕像'))?.category === '梦境景观')
 
 console.log('【数据质量过滤（sanitizeResult）】')
 const parsed = extractJson<ExtractResult>('{"characters":[{"name":"甲"},{"name":""},{"name":"乙","description":"x"}],"relations":[{"from":"a","to":"b","relType":"友"},{"from":"","to":"b","relType":"友"}],"facts":[{"key":"k","content":"内容"},{"key":"k","content":""}]}')

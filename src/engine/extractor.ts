@@ -115,6 +115,33 @@ export const DEFAULT_ATTR_SCHEMA: AttrSchema = {
 /** 世界类别（板块分组）候选 */
 export const CATEGORIES = ['修炼体系', '经济系统', '地理环境', '种族文化', '组织势力', '物品神器', '其他'] as const
 
+/**
+ * v2.2.1：候选类别 = 内建 CATEGORIES + 存档已用类别（用户自定义/手动建的类别）。
+ * 默认类别是内核向白名单；题材不匹配时 AI 只能全给「其他」，自定义类别也被洗掉。
+ */
+export function collectCategoryCandidates(used: string[] | undefined): string[] {
+  const set = new Set<string>(CATEGORIES as readonly string[])
+  for (const c of used ?? []) {
+    const t = typeof c === 'string' ? c.trim() : ''
+    if (t && t !== '其他') set.add(t)
+  }
+  return [...set]
+}
+
+/**
+ * 事实类别归一化。
+ * v2.2.1 宽放：候选内的保留；候选外但有意义（2-8 字、无尖括号/引号）的新类别也保留
+ * （AI 按题材新建类别的场景，如「梦境规则」「都市异闻」）；
+ * 只有空/无意义/超长/含非法字符才归「其他」——根治「全堆其他」。
+ */
+export function normCategory(cat: unknown, candidates?: readonly string[]): string {
+  const c = typeof cat === 'string' ? cat.trim() : ''
+  if (!c) return '其他'
+  if ((candidates ?? CATEGORIES as readonly string[]).includes(c)) return c
+  if (c.length >= 2 && c.length <= 8 && !/[<>{}[\]"'`\\]/.test(c)) return c
+  return '其他'
+}
+
 export function parseAttrSchema(json?: string): AttrSchema {
   if (!json) return DEFAULT_ATTR_SCHEMA
   try {
@@ -147,12 +174,8 @@ export interface ExistingEntities {
   attrDims?: string[]
   /** v1.3：境界标签名（空则不提境界） */
   realmLabel?: string
-}
-
-/** 事实类别归一化：不在候选列表 → 其他 */
-export function normCategory(cat: unknown): string {
-  const c = typeof cat === 'string' ? cat.trim() : ''
-  return (CATEGORIES as readonly string[]).includes(c) ? c : '其他'
+  /** v2.2.1：存档已用类别（策略书/笔记本/手动条目中出现的），供提取时优先沿用 */
+  categoryCandidates?: string[]
 }
 
 /** 合并提取属性到已有 attributesJson：新 label 覆盖/追加，保留前 6 条 */
@@ -171,13 +194,14 @@ export function mergeAttrs(
 }
 
 /** 按存档维度/境界生成书记官系统提示词 */
-export function makeSystemPrompt(attrDims: string[], realmLabel: string): string {
+export function makeSystemPrompt(attrDims: string[], realmLabel: string, categoryCandidates?: string[]): string {
   const dimsLine = attrDims.length
     ? `「${attrDims.join('、')}」`
     : '（存档未设置维度，可自由命名，每角色最多 6 条）'
   const realmField = realmLabel
     ? `, "realm": "${realmLabel}（如：金丹期/见习法师；无法确认就留空）"`
     : ''
+  const catLine = (categoryCandidates?.length ? categoryCandidates : CATEGORIES as readonly string[]).join('、')
   return `你是梦境世界书的「书记官」。阅读一段 AI 跑团对话，提取其中值得沉淀到世界书的新信息。
 
 输出严格 JSON（不要输出任何其他文字、不要代码块），格式：
@@ -194,7 +218,7 @@ export function makeSystemPrompt(attrDims: string[], realmLabel: string): string
 3. attributes 只能使用存档维度 ${dimsLine}；从对话线索推断 0-10 整数打分；没有可靠线索的维度不填；每个角色最多填 6 条。
 4. 已有角色的数值只在明显变化时更新。
 5. relations：新出现或变化的关系（亲缘/敌友/恋人/师徒等）。
-6. facts：世界观设定、地点、物品、重要事件、剧情转折。一条事实一记，不要大段复制原文。category 只能从「${CATEGORIES.join('、')}」中选一个。
+6. facts：世界观设定、地点、物品、重要事件、剧情转折。一条事实一记，不要大段复制原文。category 从下列候选中选一个，**优先沿用已有类别**（同一主题归同一类别，这很重要）：「${catLine}」。若确有候选中不存在的全新主题，可新建一个 2-4 字的类别；**不确定时选「其他」，不要乱造类别**。
 7. 名字用对话中的原称。无法确定名字的次要角色不提取。
 8. **renames（重要）**：对话中明确纠正或改称某个已登记角色（如「她其实叫艾莉丝，不是爱丽丝」「我们叫她小艾」）时，输出 renames 把旧名映射到新名；该角色的新信息一律用新名输出、不要再输出旧名条目。没有改名则输出空数组。
 9. 如果某类没有新内容，输出空数组。
@@ -225,7 +249,7 @@ export function extractJson<T>(raw: string): T | null {
 }
 
 /** 清洗提取结果（空字段过滤等），纯函数便于测试 */
-export function sanitizeResult(parsed: Partial<ExtractResult>): ExtractResult {
+export function sanitizeResult(parsed: Partial<ExtractResult>, categoryCandidates?: string[]): ExtractResult {
   return {
     characters: Array.isArray(parsed.characters)
       ? parsed.characters
@@ -252,7 +276,7 @@ export function sanitizeResult(parsed: Partial<ExtractResult>): ExtractResult {
           .map(f => ({
             key: f.key ?? '',
             content: f.content,
-            category: normCategory(f.category),
+            category: normCategory(f.category, categoryCandidates),
           }))
       : [],
     renames: Array.isArray(parsed.renames)
@@ -274,8 +298,9 @@ export async function extractFacts(
     existing.facts.length ? `已有事实触发词：${existing.facts.join('、')}` : '',
   ].filter(Boolean).join('\n') || '（暂无已登记信息）'
 
+  const categoryCandidates = collectCategoryCandidates(existing.categoryCandidates)
   const reply = await chatCompletion(api, [
-    { role: 'system', content: makeSystemPrompt(existing.attrDims ?? [], existing.realmLabel ?? '') },
+    { role: 'system', content: makeSystemPrompt(existing.attrDims ?? [], existing.realmLabel ?? '', categoryCandidates) },
     { role: 'user', content: `${existingInfo}\n\n=== 请阅读以下对话，提取新事实 ===\n\n${existing.recentText.slice(0, 24000)}` },
   ])
 
@@ -283,5 +308,5 @@ export async function extractFacts(
   if (!parsed) {
     return { characters: [], relations: [], facts: [], renames: [], raw: reply }
   }
-  return { ...sanitizeResult(parsed), raw: reply }
+  return { ...sanitizeResult(parsed, categoryCandidates), raw: reply }
 }
