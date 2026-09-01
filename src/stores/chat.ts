@@ -257,18 +257,34 @@ export const useChatStore = defineStore('chat', {
     /** 迁移：把老 characters 表行转成 kind=character 条目（升级/合并用） */
     async migrateLegacyCharacters(): Promise<number> {
       const c = this.currentCampaign
-      if (!c?.notebookWorldbookId) return 0
+      if (!c?.id) return 0
+      // v3.1.1：旧档可能从未 syncFrom → 无 notebookWorldbookId，先确保笔记簿存在再迁
+      const wb = await this.ensureNotebook()
+      const notebookId = wb.id!
       const legacy = await db.characters.where('campaignId').equals(c.id!).toArray()
       const entries = this.characterEntries()
       let n = 0
       for (const row of legacy) {
         // 已存在同名人物卡（新模型已经接管）→ 跳过
         if (entries.some((e) => e.key.includes(row.name) || parseCharacterPayload(e.payloadJson).name === row.name)) continue
-        const e = characterRowToEntry(row, c.notebookWorldbookId)
+        const e = characterRowToEntry(row, notebookId)
+        e.isMain = 0 // 统一 0；主角标记在迁移完成后补齐
         await db.entries.add(plainMsg(e))
         n++
       }
-      if (n) await useDataStore().loadAll()
+      if (n) {
+        await useDataStore().loadAll()
+        // 主角：若迁移前没有 isMain 角色卡，取最早创建的启用卡设为主角
+        const after = this.characterEntries()
+        if (!after.some((e) => e.isMain === 1) && after.length) {
+          const first = [...after].sort((a, b) => (a.createdAt ?? 0) - (b.createdAt ?? 0))[0]
+          if (first.id) {
+            first.isMain = 1
+            await db.entries.put(plainMsg(first))
+            await useDataStore().loadAll()
+          }
+        }
+      }
       return n
     },
 
