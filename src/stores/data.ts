@@ -236,20 +236,25 @@ export const useDataStore = defineStore('data', {
     /**
      * 导入世界书 JSON（本 App 规范 或 SillyTavern 风格）。
      * 返回导入统计。campaignId 可选：带角色/关系时写入该存档。
+     * targetWbId 可选：v3.4 导入到指定世界书（如存档自动笔记簿）——
+     *   给定时不新建世界书，条目直接写入该本（进入卡体系）；缺省新建（现状）。
      */
-    async importWorldbookJson(text: string, wbNameHint?: string, campaignId?: number) {
+    async importWorldbookJson(text: string, wbNameHint?: string, campaignId?: number, targetWbId?: number) {
       const data = JSON.parse(text)
       const wbMeta = data.worldbook ?? {}
       const name = String(wbMeta.name ?? wbNameHint ?? '导入的世界书').trim() || '导入的世界书'
 
-      // 创世界书
-      const wb: Worldbook = {
-        name,
-        description: wbMeta.description ?? '',
-        scope: 'global',
-        createdAt: Date.now(), updatedAt: Date.now(),
+      // 创世界书（仅 targetWbId 未给定时）
+      let wbId = targetWbId ?? 0
+      if (!wbId) {
+        const wb: Worldbook = {
+          name,
+          description: wbMeta.description ?? '',
+          scope: 'global',
+          createdAt: Date.now(), updatedAt: Date.now(),
+        }
+        wbId = await db.worldbooks.add(wb)
       }
-      const wbId = await db.worldbooks.add(wb)
 
       // entries：支持 keys 数组（ST）/ key 字符串（本规范）/ 对象形式（{"0":{...}} 斗罗式）
       // v3.2：按 ST comment 的 emoji 前缀粗分类 kind；导入条目 source=imported

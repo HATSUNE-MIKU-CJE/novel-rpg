@@ -25,6 +25,8 @@ const showImportModal = ref(false)
 const importText = ref('')
 const importFileName = ref('')
 const importFileInput = ref<HTMLInputElement>()
+/** v3.4：导入到当前存档自动笔记簿（进卡体系）；否则新建世界书 */
+const importIntoNotebook = ref(true)
 
 /** 选文件自动读入并填充 */
 function onImportFile(ev: Event) {
@@ -34,6 +36,11 @@ function onImportFile(ev: Event) {
   const reader = new FileReader()
   reader.onload = () => { importText.value = String(reader.result ?? '') }
   reader.readAsText(f)
+}
+/** v3.4：打开导入弹层，默认勾选「入笔记簿」（有存档时） */
+function openImportModal() {
+  importIntoNotebook.value = !!chat.currentCampaignId
+  showImportModal.value = true
 }
 const showBindPicker = ref(false)
 const pendingBindWb = ref<Worldbook | null>(null)
@@ -632,14 +639,24 @@ function wbDetailEntries(wb: Worldbook): Entry[] {
 async function doImportWb() {
   if (!importText.value.trim()) return
   try {
-    const r = await ds.importWorldbookJson(importText.value, undefined, chat.currentCampaignId || undefined)
+    // v3.4：勾选「导入到笔记簿」且已开存档 → 直接进当前存档自动笔记簿（卡体系生效）
+    let target: number | undefined
+    let intoNb = false
+    if (importIntoNotebook.value && chat.currentCampaignId) {
+      const nb = await chat.ensureNotebook()
+      target = nb.id
+      intoNb = true
+    }
+    const r = await ds.importWorldbookJson(importText.value, undefined, chat.currentCampaignId || undefined, target)
     importText.value = ''
     showImportModal.value = false
     const dist = r.kindDist as Record<string, number> | undefined
     const distText = dist
       ? ' · ' + Object.entries(dist).map(([k, v]) => `${kindLabel(k)} ${v}`).join(' / ')
       : ''
-    alert(`导入成功：条目 ${r.entryCount}${distText}${r.charCount ? ` · 角色 ${r.charCount}` : ''}${r.relCount ? ` · 关系 ${r.relCount}` : ''}\n\n已按 emoji 前缀自动分类为「卡」类型，可在世界 tab 看到 kind 徽标。`)
+    alert(`导入成功：条目 ${r.entryCount}${distText}${r.charCount ? ` · 角色 ${r.charCount}` : ''}${r.relCount ? ` · 关系 ${r.relCount}` : ''}\n\n${intoNb
+      ? '已导入当前存档的自动笔记簿：人物卡进「角色」tab 可设主角，世界设定按触发词注入。'
+      : '已导入为新世界书：记得在配置 → 世界书里「绑定」到当前存档。'}`)
     await refreshBindings()
     await refreshChars()
   } catch (e: any) {
@@ -1219,7 +1236,7 @@ function showToast(msg: string) {
             <button class="btn btn-warm btn-sm" style="flex:1" @click="download('worldbook-schema.json', formatSpecSchema)">
               <Icon name="braces" :size="13" /> Schema.json
             </button>
-            <button class="btn btn-soft btn-sm" style="flex:1" @click="showImportModal = true"><Icon name="download" :size="13" /> 导入</button>
+            <button class="btn btn-soft btn-sm" style="flex:1" @click="openImportModal()"><Icon name="download" :size="13" /> 导入</button>
           </div>
 
           <!-- 书本卡网格 -->
@@ -1413,6 +1430,13 @@ function showToast(msg: string) {
         <div class="list-sub" style="margin-bottom:10px">
           支持本 App 规范（version/worldbook/entries/characters/relations）与 SillyTavern world_info 格式。
           角色与关系会写入当前存档（{{ campaignName }}）。
+        </div>
+        <div class="field" style="margin-bottom:10px">
+          <label class="chk-label" style="display:flex; align-items:center; gap:8px; cursor:pointer; margin:0">
+            <input v-model="importIntoNotebook" type="checkbox" :disabled="!chat.currentCampaignId" />
+            <span style="flex:1">导入到当前存档的自动笔记簿{{ chat.currentCampaignId ? '' : '（未开存档，自动改为新建）' }}</span>
+          </label>
+          <div class="list-sub" style="margin-top:4px">勾选后人物卡立即进「角色」tab（可设主角/状态卡），世界设定按触发词注入；不勾则新建一本世界书，需手动绑定。</div>
         </div>
         <div class="field">
           <label style="margin-bottom:8px">方式一：选择文件（自动识别填入）</label>
