@@ -83,12 +83,13 @@ await page.locator('.panel-tabs').getByRole('button', { name: /角色/ }).click(
 await page.waitForTimeout(300)
 await page.getByRole('button', { name: /整理世界书/ }).click()
 await page.waitForTimeout(4000)
-check('整理产生角色（characters 表）', (await page.evaluate(`(async () => {
+const charsLen = await page.evaluate(`(async () => {
   const req = indexedDB.open('novel-rpg')
   const db = await new Promise((res, rej) => { req.onsuccess = () => res(req.result); req.onerror = () => rej(req.error) })
   const chars = await new Promise((res) => { const r = db.transaction('characters', 'readonly').objectStore('characters').getAll(); r.onsuccess = () => res(r.result ?? []) })
   return chars.length
-})()`)) >= 1)
+})()`)
+check('整理产生角色（characters 表）', Number(charsLen) >= 1)
 
 // 模拟旧档：删除 kind=character 条目（只留下 characters 表数据）
 await page.evaluate(`(async () => {

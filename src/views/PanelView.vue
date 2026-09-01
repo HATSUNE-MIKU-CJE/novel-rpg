@@ -743,7 +743,7 @@ function showToast(msg: string) {
         @click="organizeNow"
       >{{ chat.organizing ? '思客正在记录…' : '整理世界书（提取角色/事实）' }}</button>
       <button
-        class="btn btn-ghost btn-block" style="margin-top: 8px"
+        class="btn btn-warm btn-block" style="margin-top: 8px"
         @click="migrateChars"
       >迁移旧角色卡为人物卡（新模型）</button>
     </div>
