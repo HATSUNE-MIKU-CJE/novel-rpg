@@ -27,6 +27,9 @@ export function parseCharacterPayload(json?: string): CharacterPayload {
       const barValues = p.barValues && typeof p.barValues === 'object' && !Array.isArray(p.barValues)
         ? Object.fromEntries(Object.entries(p.barValues).map(([k, v]) => [k, Number(v) || 0]))
         : undefined
+      const status = p.status && typeof p.status === 'object' && !Array.isArray(p.status)
+        ? p.status as Record<string, string | string[]>
+        : undefined
       return {
         name: String(p.name ?? '').trim(),
         identity: p.identity?.trim() || undefined,
@@ -34,6 +37,7 @@ export function parseCharacterPayload(json?: string): CharacterPayload {
         attributes: attrs,
         behavior: p.behavior?.trim() || undefined,
         barValues,
+        status,
       }
     }
   } catch { /* 坏数据 → 空 */ }
@@ -48,6 +52,7 @@ export function characterPayloadJson(p: CharacterPayload): string {
   if (p.attributes?.length) out.attributes = p.attributes
   if (p.behavior) out.behavior = p.behavior
   if (p.barValues && Object.keys(p.barValues).length) out.barValues = p.barValues
+  if (p.status && Object.keys(p.status).length) out.status = p.status
   return JSON.stringify(out)
 }
 

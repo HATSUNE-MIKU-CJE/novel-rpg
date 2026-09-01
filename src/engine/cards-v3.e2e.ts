@@ -107,5 +107,12 @@ const locEntry = mkEntry({ id: 201, kind: 'location', key: '铁炉堡', hook: '�
   check('地理卡详情展开', inj.keyed.some((k) => k.includes('铁炉堡：山间要塞')))
 }
 
+console.log('【状态随角色走（v3.3）】')
+const pStatus = parseCharacterPayload(characterPayloadJson({ name: '阳了', status: { 体力: '60%', 收集物资: ['旧魔法书', '木棍'] } }))
+check('status 往返（含清单）', pStatus.status?.['体力'] === '60%' && Array.isArray(pStatus.status?.['收集物资']))
+check('status 清单保序', (pStatus.status?.['收集物资'] as string[]).join(',') === '旧魔法书,木棍')
+const pNoStatus = parseCharacterPayload(characterPayloadJson({ name: 'x' }))
+check('无 status → undefined', pNoStatus.status === undefined)
+
 console.log(`\n结果：${pass} 通过 / ${fail} 失败`)
 process.exit(fail ? 1 : 0)

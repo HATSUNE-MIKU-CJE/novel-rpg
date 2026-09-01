@@ -291,6 +291,21 @@ export const useChatStore = defineStore('chat', {
           }
         }
       }
+      // v3.3：状态迁移——存档级 statusValuesJson → 主角人物卡 payload.status（仅当主角卡没有 status）
+      const mainNow = this.mainCharacterEntry()
+      if (mainNow?.id && c.statusValuesJson) {
+        const mp = parseCharacterPayload(mainNow.payloadJson)
+        if (!mp.status) {
+          const legacyVals = readStatusValues(c.statusValuesJson)
+          if (Object.keys(legacyVals).length) {
+            mp.status = legacyVals
+            mainNow.payloadJson = characterPayloadJson(mp)
+            mainNow.updatedAt = Date.now()
+            await db.entries.put(plainMsg(mainNow))
+            await useDataStore().loadAll()
+          }
+        }
+      }
       return n
     },
 
@@ -746,7 +761,8 @@ export const useChatStore = defineStore('chat', {
         }
         const sc = this.statusCard()
         if (sc.enabled) {
-          const vals = readStatusValues(campaign.statusValuesJson)
+          // v3.3：状态随角色走——主角卡 payload.status 优先，回退存档级
+          const vals = p.status ?? readStatusValues(campaign.statusValuesJson)
           for (const f of sc.fields.filter((x) => !x.disabled)) {
             const v = vals[f.label]
             if (Array.isArray(v) && v.length) stateLines.push(`${f.label}：${v.join('、')}`)
@@ -1059,7 +1075,11 @@ export const useChatStore = defineStore('chat', {
       const def = this.statusCard()
       if (!c || !def.enabled || !updates.length) return
       const active = def.fields.filter((f) => !f.disabled)
-      const vals = readStatusValues(c.statusValuesJson)
+      // v3.3：状态随角色走——优先读写主角人物卡 payload.status；无主角卡时回退存档级（只读兼容）
+      const mainEntry = this.mainCharacterEntry()
+      const vals = mainEntry
+        ? { ...(parseCharacterPayload(mainEntry.payloadJson).status ?? {}) }
+        : readStatusValues(c.statusValuesJson)
       for (const u of updates) {
         for (const [label, v] of Object.entries(u)) {
           const f = active.find((x) => x.label === label)
@@ -1089,9 +1109,19 @@ export const useChatStore = defineStore('chat', {
           }
         }
       }
-      c.statusValuesJson = writeStatusValues(vals)
-      await db.campaigns.put(plainMsg(c))
-      await useDataStore().loadAll()
+      if (mainEntry) {
+        // 写回主角人物卡 payload.status
+        const p = parseCharacterPayload(mainEntry.payloadJson)
+        p.status = vals
+        mainEntry.payloadJson = characterPayloadJson(p)
+        mainEntry.updatedAt = Date.now()
+        await db.entries.put(plainMsg(mainEntry))
+        await useDataStore().loadAll()
+      } else {
+        c.statusValuesJson = writeStatusValues(vals)
+        await db.campaigns.put(plainMsg(c))
+        await useDataStore().loadAll()
+      }
     },
 
     /** 执行操作主逻辑（确认时调用） */

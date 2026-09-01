@@ -48,6 +48,8 @@ export interface CharacterPayload {
   behavior?: string
   /** 状态条数值（Record<条名, 数值>，与老 character 表同构） */
   barValues?: Record<string, number>
+  /** v3.3：状态卡当前值（Record<字段名, 文本|清单>），随角色走；缺省回退存档级 statusValuesJson */
+  status?: Record<string, string | string[]>
 }
 
 /** 地理卡结构化载荷（kind=location 的 payloadJson，v3.2） */

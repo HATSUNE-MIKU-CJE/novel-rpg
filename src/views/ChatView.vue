@@ -281,12 +281,16 @@ const liveBody = computed(() => {
   return chat.liveText
 })
 
-/** v2.2：状态卡展示数据（血条 HUD 下方；无值字段隐藏） */
+/** v2.2 + v3.3：状态卡展示数据（血条 HUD 下方；无值字段隐藏；随主角角色卡走） */
 const statusCardState = computed(() => {
   const c = chat.currentCampaign
   const def = chat.statusCard()
   if (!c || !def.enabled) return null
-  const vals = readStatusValues(c.statusValuesJson)
+  // v3.3：主角人物卡 payload.status 优先，回退存档级
+  const mainEntry = chat.mainCharacterEntry()
+  const vals = mainEntry
+    ? (parseCharacterPayload(mainEntry.payloadJson).status ?? readStatusValues(c.statusValuesJson))
+    : readStatusValues(c.statusValuesJson)
   const rows = def.fields
     .filter((f) => !f.disabled)
     .map((f) => {

@@ -79,10 +79,11 @@ const dist = await page.evaluate(`(async () => {
   return m
 })()`)
 console.log('[dbg] dist:', JSON.stringify(dist))
-check('导入条目 > 20', Object.values(dist).reduce((a: number, b: number) => a + b, 0) > 20)
-check('有人物卡', (dist as any)?.character > 0)
-check('有地点卡', (dist as any)?.location > 0)
-check('有事件卡', (dist as any)?.event > 0)
+const distObj = dist as Record<string, number>
+check('导入条目 > 20', Object.values(distObj).reduce((a: number, b: number) => a + b, 0) > 20)
+check('有人物卡', (distObj?.character ?? 0) > 0)
+check('有地点卡', (distObj?.location ?? 0) > 0)
+check('有事件卡', (distObj?.event ?? 0) > 0)
 
 console.log(`\n结果：${pass} 通过 / ${fail} 失败`)
 await browser.close()
