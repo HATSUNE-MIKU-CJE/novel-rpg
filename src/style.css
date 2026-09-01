@@ -579,3 +579,47 @@ html[data-theme='dark'] .chat-inputbar { background: rgba(22,21,28,.96); }
 .modal-title { font-size: 16px; font-weight: 700; margin-bottom: 14px; text-align: center; }
 
 .empty-hint { text-align: center; color: var(--ink-soft); font-size: 13.5px; padding: 34px 10px; }
+
+/* ================= v3.2 卡体系视觉 ================= */
+
+/* kind 徽标：每类卡专属色系 */
+.tag-kind {
+  font-size: 10px; font-weight: 700; padding: 2px 6px; border-radius: 6px;
+  flex-shrink: 0; margin-left: 2px;
+}
+.tag-kind[data-kind='character'] { background: var(--accent-soft); color: var(--accent-deep); }
+.tag-kind[data-kind='location']  { background: #e3f0e4; color: #4e7d57; }
+.tag-kind[data-kind='item']      { background: #f7e9d3; color: #a5763a; }
+.tag-kind[data-kind='event']     { background: #fde8e2; color: #b06a52; }
+.tag-kind[data-kind='rule']      { background: #e7e3f5; color: #6f5fa3; }
+.tag-kind[data-kind='faction']   { background: #f0e3f2; color: #8a5f9e; }
+.tag-kind[data-kind='timeline']  { background: #e2eef7; color: #4a7ba6; }
+.tag-kind[data-kind='note']      { background: var(--card-soft); color: var(--ink-soft); }
+html[data-theme='dark'] .tag-kind[data-kind='location'] { background: #25392a; color: #8fbf98; }
+html[data-theme='dark'] .tag-kind[data-kind='item']     { background: #3a2f1c; color: #d4ae76; }
+html[data-theme='dark'] .tag-kind[data-kind='event']    { background: #3c2924; color: #d99a82; }
+html[data-theme='dark'] .tag-kind[data-kind='race']     { background: #1e1c26; color: #918ba6; }
+
+/* 人物卡卡片：hover 投影 + 主角金边 */
+.char-card {
+  transition: transform .15s ease, box-shadow .15s ease;
+}
+.char-card:active { transform: scale(.97); }
+.char-card .entry-tag.tag-constant[data-main='1'] { background: var(--warm-soft); color: var(--warm); border: 1px solid var(--warm); }
+
+/* 世界类别卡：hover 浮起 */
+.world-cat-card { transition: transform .15s ease, box-shadow .15s ease; cursor: pointer; }
+.world-cat-card:active { transform: scale(.98); }
+
+/* 注入分层可视化：P0 卡片淡紫底 + 左边框 */
+.status-card, .brief-card {
+  border-left: 3px solid var(--accent);
+}
+
+/* 主标题图标微动画 */
+.page-title span { animation: none; }
+@keyframes fadeIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: translateY(0); } }
+.card { animation: fadeIn .18s ease; }
+
+/* 底部 tabbar 毛玻璃加深 */
+.tabbar { box-shadow: 0 -2px 12px rgba(90,82,70,.06); }

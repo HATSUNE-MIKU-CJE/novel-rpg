@@ -15,6 +15,12 @@ export interface OpBlock {
   key?: string          // entry.* 触发词
   content?: string      // entry 内容 / char 描述
   category?: string     // 世界类别
+  /** v3.2：[[WB]] 卡类型（character/location/item/event/rule/faction/note） */
+  kind?: string
+  /** v3.2：常驻精要一句话 */
+  hook?: string
+  /** v3.2：时期标签 */
+  timeline?: string
   name?: string         // char 名
   identity?: string
   realm?: string

@@ -38,6 +38,12 @@ export function bodyOfMsg(m: Message): string {
   } catch { return m.content }
 }
 
+/** v3.2：归一化 AI 给的 kind（非法/占位 → note） */
+export function sanitizeKind(k?: string): Entry['kind'] {
+  const KINDS = ['character', 'location', 'item', 'event', 'rule', 'faction', 'timeline', 'note']
+  return (KINDS.includes(String(k ?? '')) ? String(k) : 'note') as Entry['kind']
+}
+
 /** 上下文压缩：预算内 80% 触发 */
 export const COMPACT_RATIO = 0.8
 
@@ -1104,13 +1110,19 @@ export const useChatStore = defineStore('chat', {
             if (exist) {
               exist.content = p.content ?? exist.content
               if (p.category) exist.category = normCategory(p.category)
+              if (p.kind) exist.kind = sanitizeKind(p.kind)
+              if (p.hook !== undefined) exist.hook = p.hook.trim() || undefined
+              if (p.timeline !== undefined) exist.timeline = p.timeline.trim() || undefined
               exist.updatedAt = Date.now()
               await db.entries.put(plainMsg(exist))
             } else {
               await db.entries.add(plainMsg({
                 worldbookId: notebook.id!,
+                kind: sanitizeKind(p.kind),
                 key: p.key ?? '',
                 content: p.content ?? '',
+                hook: p.hook?.trim() || undefined,
+                timeline: p.timeline?.trim() || undefined,
                 category: normCategory(p.category),
                 enabled: 1,
                 source: 'ai',

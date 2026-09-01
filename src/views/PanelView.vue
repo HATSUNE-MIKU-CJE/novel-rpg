@@ -7,7 +7,7 @@ import { formatSpecMarkdown, formatSpecSchema } from '../engine/specExport'
 import { exportFile } from '../engine/exportFile'
 import { CATEGORIES, type AttrSchema } from '../engine/extractor'
 import { STATUS_CARD_TEMPLATE } from '../engine/cards'
-import { entryToCharacterShape, parseCharacterPayload, parseLocationPayload, cardDisplayName, kindLabel, entryDisplayText, locationPayloadJson, characterPayloadJson } from '../engine/cards-v3'
+import { entryToCharacterShape, parseCharacterPayload, parseLocationPayload, parseItemPayload, parseEventPayload, parseRulePayload, parseFactionPayload, parseTimelinePayload, cardDisplayName, kindLabel, entryDisplayText, locationPayloadJson, characterPayloadJson, itemPayloadJson, eventPayloadJson, rulePayloadJson, factionPayloadJson, timelinePayloadJson } from '../engine/cards-v3'
 import { looksLikeSpecText } from '../engine/dreamParser'
 import { opGroup, opGroupLabel, opTitle, type OpBlock } from '../engine/ops'
 import RelationGraph from './RelationGraph.vue'
@@ -378,18 +378,24 @@ async function openNewEntryIn(cat: string) {
 const catSel = ref('其他')
 const catNewName = ref('')
 
-// ---- v3.2 条目编辑器：kind + 地理卡 payload ----
+// ---- v3.2 条目编辑器：kind + 各类卡 payload ----
 const EDIT_KINDS = [
   { value: 'note', label: '备注（普通条目）' },
   { value: 'character', label: '人物卡' },
   { value: 'location', label: '地理卡' },
-  { value: 'item', label: '物品卡（字段待补）' },
-  { value: 'event', label: '事件卡（字段待补）' },
-  { value: 'rule', label: '规则卡（字段待补）' },
-  { value: 'faction', label: '势力卡（字段待补）' },
+  { value: 'item', label: '物品卡' },
+  { value: 'event', label: '事件卡' },
+  { value: 'rule', label: '规则卡' },
+  { value: 'faction', label: '势力卡' },
+  { value: 'timeline', label: '时期卡' },
 ]
 const editKindSel = ref('note')
 const editLocPayload = ref<import('../types').LocationPayload>({ name: '', region: '', danger: undefined, features: '', residents: '' })
+const editItemPayload = ref<import('../types').ItemPayload>({ name: '', category: '', effect: '', holder: '', state: '' })
+const editEventPayload = ref<import('../types').EventPayload>({ name: '', time: '', place: '', detail: '' })
+const editRulePayload = ref<import('../types').RulePayload>({ name: '', scope: '', clauses: '', consequence: '' })
+const editFactionPayload = ref<import('../types').FactionPayload>({ name: '', members: '', goal: '', territory: '', relations: '' })
+const editTimelinePayload = ref<import('../types').TimelinePayload>({ name: '', range: '', overview: '' })
 
 // ---- v1.8 血条设定（存档级） ----
 const barDraft = ref(chat.barSchema())
@@ -517,13 +523,17 @@ async function saveEntry() {
   const e = editEntry.value
   const isNew = !e.id
   const category = catSel.value === '__new__' ? catNewName.value.trim() : (catSel.value || '其他')
-  // v3.2：kind + payload（location 卡写入结构化 payload）
+  // v3.2：kind + payload（按类型写入结构化 payload）
   const kind = editKindSel.value as Entry['kind']
   let payloadJson = e.payloadJson
-  if (kind === 'location') {
-    payloadJson = locationPayloadJson(editLocPayload.value)
-  } else if (kind === 'character' && !e.payloadJson) {
-    payloadJson = characterPayloadJson({ name: e.key.trim() })
+  switch (kind) {
+    case 'location': payloadJson = locationPayloadJson(editLocPayload.value); break
+    case 'item': payloadJson = itemPayloadJson(editItemPayload.value); break
+    case 'event': payloadJson = eventPayloadJson(editEventPayload.value); break
+    case 'rule': payloadJson = rulePayloadJson(editRulePayload.value); break
+    case 'faction': payloadJson = factionPayloadJson(editFactionPayload.value); break
+    case 'timeline': payloadJson = timelinePayloadJson(editTimelinePayload.value); break
+    case 'character': if (!e.payloadJson) payloadJson = characterPayloadJson({ name: e.key.trim() }); break
   }
   await ds.saveEntry({
     ...e,
@@ -625,7 +635,11 @@ async function doImportWb() {
     const r = await ds.importWorldbookJson(importText.value, undefined, chat.currentCampaignId || undefined)
     importText.value = ''
     showImportModal.value = false
-    alert(`导入成功：条目 ${r.entryCount} · 角色 ${r.charCount} · 关系 ${r.relCount}`)
+    const dist = r.kindDist as Record<string, number> | undefined
+    const distText = dist
+      ? ' · ' + Object.entries(dist).map(([k, v]) => `${kindLabel(k)} ${v}`).join(' / ')
+      : ''
+    alert(`导入成功：条目 ${r.entryCount}${distText}${r.charCount ? ` · 角色 ${r.charCount}` : ''}${r.relCount ? ` · 关系 ${r.relCount}` : ''}\n\n已按 emoji 前缀自动分类为「卡」类型，可在世界 tab 看到 kind 徽标。`)
     await refreshBindings()
     await refreshChars()
   } catch (e: any) {
@@ -756,10 +770,14 @@ function openEdit(e: Entry) {
   editEntry.value = { ...e }
   catNewName.value = ''
   catSel.value = e.category || '其他'
-  // v3.2：kind 与地理卡 payload
+  // v3.2：kind 与各类卡 payload
   editKindSel.value = e.kind && e.kind !== 'note' ? e.kind : 'note'
-  const loc = parseLocationPayload(e.payloadJson)
-  editLocPayload.value = { ...loc }
+  editLocPayload.value = { ...parseLocationPayload(e.payloadJson) }
+  editItemPayload.value = { ...parseItemPayload(e.payloadJson) }
+  editEventPayload.value = { ...parseEventPayload(e.payloadJson) }
+  editRulePayload.value = { ...parseRulePayload(e.payloadJson) }
+  editFactionPayload.value = { ...parseFactionPayload(e.payloadJson) }
+  editTimelinePayload.value = { ...parseTimelinePayload(e.payloadJson) }
   showEntryEditor.value = true
 }
 
@@ -806,7 +824,7 @@ function showToast(msg: string) {
           <div class="char-avatar">{{ c.name.slice(0, 1) }}</div>
           <div class="list-title" style="display:flex; align-items:center; gap:6px">
             {{ c.name }}
-            <span v-if="charIsMain(c)" class="entry-tag tag-constant">主角</span>
+            <span v-if="charIsMain(c)" class="entry-tag tag-constant" :data-main="'1'">主角</span>
           </div>
           <div class="list-sub">{{ c.identity || '身份未知' }}<template v-if="c.realm"> · {{ c.realm }}</template><template v-if="charTimelineOf(c)"> · {{ charTimelineOf(c) }}</template></div>
           <div v-if="c.description" class="list-sub" style="margin-top:4px; max-height:44px; overflow:hidden">
@@ -1085,7 +1103,7 @@ function showToast(msg: string) {
           <span class="entry-tag" :class="e.key ? 'tag-trigger' : 'tag-constant'" :style="!e.enabled ? 'opacity:.45' : ''">
             {{ !e.enabled ? '停用' : (e.key ? e.key.split(/[,，]/)[0].slice(0, 8) : '常驻') }}
           </span>
-          <span v-if="e.kind && e.kind !== 'note'" class="entry-tag tag-kind" :style="!e.enabled ? 'opacity:.45' : ''">{{ kindLabel(e.kind) }}</span>
+          <span v-if="e.kind && e.kind !== 'note'" class="entry-tag tag-kind" :data-kind="e.kind" :style="!e.enabled ? 'opacity:.45' : ''">{{ kindLabel(e.kind) }}</span>
           <div style="flex:1; min-width:0">
             <div class="list-sub" style="white-space:pre-wrap; font-size:13px; color:var(--ink)">{{ entryDisplay(e) }}</div>
             <div class="list-sub" style="margin-top:2px; color:var(--ink-soft); font-size:10.5px">
@@ -1316,26 +1334,47 @@ function showToast(msg: string) {
         </div>
         <!-- 地理卡字段（kind=location） -->
         <template v-if="editKindSel === 'location'">
-          <div class="field">
-            <label>地名</label>
-            <input v-model="editLocPayload.name" placeholder="如：铁炉堡" />
-          </div>
-          <div class="field">
-            <label>所属区域</label>
-            <input v-model="editLocPayload.region" placeholder="如：星斗大森林外围" />
-          </div>
-          <div class="field">
-            <label>危险度（0-100）</label>
-            <input v-model.number="editLocPayload.danger" type="number" min="0" max="100" placeholder="0=安全" />
-          </div>
-          <div class="field">
-            <label>地貌/特色</label>
-            <textarea v-model="editLocPayload.features" rows="2" placeholder="如：云雾缭绕的峡谷，盛产铁矿石"></textarea>
-          </div>
-          <div class="field">
-            <label>居民/势力</label>
-            <input v-model="editLocPayload.residents" placeholder="如：矮人铁匠公会" />
-          </div>
+          <div class="field"><label>地名</label><input v-model="editLocPayload.name" placeholder="如：铁炉堡" /></div>
+          <div class="field"><label>所属区域</label><input v-model="editLocPayload.region" placeholder="如：星斗大森林外围" /></div>
+          <div class="field"><label>危险度（0-100）</label><input v-model.number="editLocPayload.danger" type="number" min="0" max="100" placeholder="0=安全" /></div>
+          <div class="field"><label>地貌/特色</label><textarea v-model="editLocPayload.features" rows="2" placeholder="如：云雾缭绕的峡谷，盛产铁矿石"></textarea></div>
+          <div class="field"><label>居民/势力</label><input v-model="editLocPayload.residents" placeholder="如：矮人铁匠公会" /></div>
+        </template>
+        <!-- 物品卡字段（kind=item） -->
+        <template v-else-if="editKindSel === 'item'">
+          <div class="field"><label>物品名</label><input v-model="editItemPayload.name" placeholder="如：玄天功玉简" /></div>
+          <div class="field"><label>类别</label><input v-model="editItemPayload.category" placeholder="如：功法/武器/灵药" /></div>
+          <div class="field"><label>效果/用途</label><textarea v-model="editItemPayload.effect" rows="2" placeholder="效果描述"></textarea></div>
+          <div class="field"><label>持有者</label><input v-model="editItemPayload.holder" placeholder="如：唐三" /></div>
+          <div class="field"><label>状态</label><input v-model="editItemPayload.state" placeholder="如：破损/封印/完整" /></div>
+        </template>
+        <!-- 事件卡字段（kind=event） -->
+        <template v-else-if="editKindSel === 'event'">
+          <div class="field"><label>事件名</label><input v-model="editEventPayload.name" placeholder="如：小舞献祭" /></div>
+          <div class="field"><label>时间</label><input v-model="editEventPayload.time" placeholder="如：斗一第 4 年" /></div>
+          <div class="field"><label>地点</label><input v-model="editEventPayload.place" placeholder="如：星斗大森林" /></div>
+          <div class="field"><label>经过/影响</label><textarea v-model="editEventPayload.detail" rows="3" placeholder="事件经过与影响"></textarea></div>
+        </template>
+        <!-- 规则卡字段（kind=rule） -->
+        <template v-else-if="editKindSel === 'rule'">
+          <div class="field"><label>规则名</label><input v-model="editRulePayload.name" placeholder="如：武魂觉醒规则" /></div>
+          <div class="field"><label>适用范围</label><input v-model="editRulePayload.scope" placeholder="如：所有魂师" /></div>
+          <div class="field"><label>条款/内容</label><textarea v-model="editRulePayload.clauses" rows="3" placeholder="规则条款"></textarea></div>
+          <div class="field"><label>违例后果</label><input v-model="editRulePayload.consequence" placeholder="如：魂力反噬" /></div>
+        </template>
+        <!-- 势力卡字段（kind=faction） -->
+        <template v-else-if="editKindSel === 'faction'">
+          <div class="field"><label>势力名</label><input v-model="editFactionPayload.name" placeholder="如：唐门" /></div>
+          <div class="field"><label>成员/首脑</label><input v-model="editFactionPayload.members" placeholder="如：唐三、唐啸" /></div>
+          <div class="field"><label>目标</label><textarea v-model="editFactionPayload.goal" rows="2" placeholder="势力目标"></textarea></div>
+          <div class="field"><label>地盘</label><input v-model="editFactionPayload.territory" placeholder="如：唐门后山" /></div>
+          <div class="field"><label>对外关系</label><input v-model="editFactionPayload.relations" placeholder="如：与武魂殿敌对" /></div>
+        </template>
+        <!-- 时期卡字段（kind=timeline） -->
+        <template v-else-if="editKindSel === 'timeline'">
+          <div class="field"><label>时期名</label><input v-model="editTimelinePayload.name" placeholder="如：神界传说" /></div>
+          <div class="field"><label>起止</label><input v-model="editTimelinePayload.range" placeholder="如：斗三起始 ~ 斗三后期" /></div>
+          <div class="field"><label>概览</label><textarea v-model="editTimelinePayload.overview" rows="3" placeholder="时期概览"></textarea></div>
         </template>
         <div class="field">
           <label>内容</label>

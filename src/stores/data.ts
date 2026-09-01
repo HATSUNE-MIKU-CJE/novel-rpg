@@ -12,6 +12,31 @@ function plain<T>(obj: T): T {
 }
 
 /**
+ * v3.2：按 ST 条目 comment 的 emoji/前缀粗分类 kind（斗罗式世界书）。
+ * 👤=人物  📍/🏰=地点  ⚔️/🛡️=规则/体系  🗺️=地理  👥=势力  📜/📅=事件  💎/🗡️=物品  ⚙️=规则
+ */
+export function guessKindFromComment(comment?: string): 'character' | 'location' | 'item' | 'event' | 'rule' | 'faction' | 'note' {
+  const c = String(comment ?? '').trim()
+  if (!c) return 'note'
+  if (/👤|人物|角色|人设/.test(c)) return 'character'
+  if (/📖|📜|📅|事件|故事|历史|传说|战役|纪年|年表|剧情|纪事/.test(c)) return 'event'
+  if (/📍|🏰|🗺|地域|地点|大陆|城|村|森林|山|海|谷|遗迹|世界格局/.test(c)) return 'location'
+  if (/👥|势力|家族|宗门|公会|组织|帝国|王国/.test(c)) return 'faction'
+  if (/💎|🗡|🔮|⚗|武器|装备|神器|宝物|物品|魂导器/.test(c)) return 'item'
+  if (/⚔|🛡|⚙|规则|体系|修炼|武魂|魂环|魂技|制度|能力/.test(c)) return 'rule'
+  return 'note'
+}
+
+/** v3.2：从 comment 提取 hook（「👤斗三：唐舞桐」→「唐舞桐」；锚点条目的精要） */
+export function guessHookFromEntry(e: any, kind: string): string | undefined {
+  const c = String(e?.comment ?? '').trim()
+  // 形如「👤斗三：唐舞桐」→ 冒号后为名；「🔮物品名」→ 物品名
+  const m = c.match(/[：:]\s*(.+?)$/)
+  if (m?.[1]?.trim()) return m[1].trim()
+  return undefined
+}
+
+/**
  * 引用稳定化合并：以旧数组中的对象为基底，把新数据字段合并进去。
  * 新 id 追加、消失的 id 剔除（对 trash/campaigns 按删除语义处理）。
  * 保留引用 → 外部持有的旧引用始终与 store 同步。
@@ -226,10 +251,13 @@ export const useDataStore = defineStore('data', {
       }
       const wbId = await db.worldbooks.add(wb)
 
-      // entries：支持 keys 数组（ST）或 key 字符串（本规范）
+      // entries：支持 keys 数组（ST）/ key 字符串（本规范）/ 对象形式（{"0":{...}} 斗罗式）
+      // v3.2：按 ST comment 的 emoji 前缀粗分类 kind；导入条目 source=imported
       let entryCount = 0
-      const entries = Array.isArray(data.entries) ? data.entries : []
-      for (const e of entries) {
+      const rawEntries = Array.isArray(data.entries)
+        ? data.entries
+        : (data.entries && typeof data.entries === 'object' ? Object.values(data.entries) : [])
+      for (const e of rawEntries) {
         if (!e || !e.content) continue
         let key = ''
         if (Array.isArray(e.keys) && e.keys.length) key = e.keys.map(String).join(',')
@@ -237,8 +265,12 @@ export const useDataStore = defineStore('data', {
         else if (e.key) key = Array.isArray(e.key) ? e.key.map(String).join(',') : String(e.key)
         // ST：constant=true → 常驻（key 置空）
         if (e.constant === true || e.constant === 'true') key = ''
+        const kind = guessKindFromComment(e.comment)
         await db.entries.add(plain({
           worldbookId: wbId,
+          kind,
+          // v3.2：抖罗锚点条目的 hook 从 comment 提取（「👤斗三：唐舞桐」→ 人物名）
+          hook: guessHookFromEntry(e, kind),
           key,
           content: String(e.content),
           enabled: e.enabled === false ? 0 : 1,
@@ -280,7 +312,13 @@ export const useDataStore = defineStore('data', {
       }
 
       await this.loadAll()
-      return { wbId, entryCount, charCount, relCount }
+      // v3.2：返回 kind 分布（导入预览/提示用）
+      const kindDist = new Map<string, number>()
+      for (const e of this.entries.filter((x) => x.worldbookId === wbId)) {
+        const k = e.kind ?? 'note'
+        kindDist.set(k, (kindDist.get(k) ?? 0) + 1)
+      }
+      return { wbId, entryCount, charCount, relCount, kindDist: Object.fromEntries(kindDist) }
     },
   },
 })

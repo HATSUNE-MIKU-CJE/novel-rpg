@@ -63,6 +63,47 @@ export interface LocationPayload {
   residents?: string
 }
 
+/** 物品卡载荷（v3.2） */
+export interface ItemPayload {
+  name: string
+  category?: string       // 类别（武器/灵药/装备…）
+  effect?: string         // 效果/用途
+  holder?: string         // 持有者
+  state?: string          // 状态（破损/封印/完整…）
+}
+
+/** 事件卡载荷（v3.2） */
+export interface EventPayload {
+  name: string
+  time?: string           // 时间（如：斗一第 3 年）
+  place?: string          // 地点
+  detail?: string         // 经过/影响
+}
+
+/** 规则卡载荷（v3.2） */
+export interface RulePayload {
+  name: string
+  scope?: string          // 适用范围
+  clauses?: string        // 条款/内容
+  consequence?: string    // 违例后果
+}
+
+/** 势力卡载荷（v3.2） */
+export interface FactionPayload {
+  name: string
+  members?: string        // 成员/首脑
+  goal?: string           // 目标
+  territory?: string      // 地盘
+  relations?: string      // 对外关系
+}
+
+/** 时期卡载荷（v3.2） */
+export interface TimelinePayload {
+  name: string
+  range?: string          // 起止
+  overview?: string       // 概览
+}
+
 /**
  * v3.1 类型化条目：世界书 = 唯一事实源。
  * - kind 声明这条是什么卡；payload 是该卡的结构化表格

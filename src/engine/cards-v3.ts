@@ -9,7 +9,7 @@
  *   entryToLegacyShape（渲染层继续读老字段，避免 UI 大改）
  */
 
-import type { Entry, CharacterPayload, Character, LocationPayload } from '../types'
+import type { Entry, CharacterPayload, Character, LocationPayload, ItemPayload, EventPayload, RulePayload, FactionPayload, TimelinePayload } from '../types'
 
 // ---------------- payload 读写（纯函数，坏数据安全） ----------------
 
@@ -81,9 +81,117 @@ export function locationPayloadJson(p: LocationPayload): string {
 
 /** v3.2：按 kind 解析 payload（注入/渲染共用） */
 export function parseCardPayload(kind: string, json?: string): any {
-  if (kind === 'character') return parseCharacterPayload(json)
-  if (kind === 'location') return parseLocationPayload(json)
-  return {}
+  switch (kind) {
+    case 'character': return parseCharacterPayload(json)
+    case 'location': return parseLocationPayload(json)
+    case 'item': return parseItemPayload(json)
+    case 'event': return parseEventPayload(json)
+    case 'rule': return parseRulePayload(json)
+    case 'faction': return parseFactionPayload(json)
+    case 'timeline': return parseTimelinePayload(json)
+    default: return {}
+  }
+}
+
+/** v3.2：物品卡 */
+export function parseItemPayload(json?: string): ItemPayload {
+  if (!json) return { name: '' }
+  try {
+    const p = JSON.parse(json)
+    if (p && typeof p === 'object' && !Array.isArray(p)) {
+      return { name: String(p.name ?? '').trim(), category: p.category?.trim() || undefined, effect: p.effect?.trim() || undefined, holder: p.holder?.trim() || undefined, state: p.state?.trim() || undefined }
+    }
+  } catch { /* ignore */ }
+  return { name: '' }
+}
+export function itemPayloadJson(p: ItemPayload): string {
+  const o: Record<string, any> = {}
+  if (p.name) o.name = p.name
+  if (p.category) o.category = p.category
+  if (p.effect) o.effect = p.effect
+  if (p.holder) o.holder = p.holder
+  if (p.state) o.state = p.state
+  return JSON.stringify(o)
+}
+
+/** v3.2：事件卡 */
+export function parseEventPayload(json?: string): EventPayload {
+  if (!json) return { name: '' }
+  try {
+    const p = JSON.parse(json)
+    if (p && typeof p === 'object' && !Array.isArray(p)) {
+      return { name: String(p.name ?? '').trim(), time: p.time?.trim() || undefined, place: p.place?.trim() || undefined, detail: p.detail?.trim() || undefined }
+    }
+  } catch { /* ignore */ }
+  return { name: '' }
+}
+export function eventPayloadJson(p: EventPayload): string {
+  const o: Record<string, any> = {}
+  if (p.name) o.name = p.name
+  if (p.time) o.time = p.time
+  if (p.place) o.place = p.place
+  if (p.detail) o.detail = p.detail
+  return JSON.stringify(o)
+}
+
+/** v3.2：规则卡 */
+export function parseRulePayload(json?: string): RulePayload {
+  if (!json) return { name: '' }
+  try {
+    const p = JSON.parse(json)
+    if (p && typeof p === 'object' && !Array.isArray(p)) {
+      return { name: String(p.name ?? '').trim(), scope: p.scope?.trim() || undefined, clauses: p.clauses?.trim() || undefined, consequence: p.consequence?.trim() || undefined }
+    }
+  } catch { /* ignore */ }
+  return { name: '' }
+}
+export function rulePayloadJson(p: RulePayload): string {
+  const o: Record<string, any> = {}
+  if (p.name) o.name = p.name
+  if (p.scope) o.scope = p.scope
+  if (p.clauses) o.clauses = p.clauses
+  if (p.consequence) o.consequence = p.consequence
+  return JSON.stringify(o)
+}
+
+/** v3.2：势力卡 */
+export function parseFactionPayload(json?: string): FactionPayload {
+  if (!json) return { name: '' }
+  try {
+    const p = JSON.parse(json)
+    if (p && typeof p === 'object' && !Array.isArray(p)) {
+      return { name: String(p.name ?? '').trim(), members: p.members?.trim() || undefined, goal: p.goal?.trim() || undefined, territory: p.territory?.trim() || undefined, relations: p.relations?.trim() || undefined }
+    }
+  } catch { /* ignore */ }
+  return { name: '' }
+}
+export function factionPayloadJson(p: FactionPayload): string {
+  const o: Record<string, any> = {}
+  if (p.name) o.name = p.name
+  if (p.members) o.members = p.members
+  if (p.goal) o.goal = p.goal
+  if (p.territory) o.territory = p.territory
+  if (p.relations) o.relations = p.relations
+  return JSON.stringify(o)
+}
+
+/** v3.2：时期卡 */
+export function parseTimelinePayload(json?: string): TimelinePayload {
+  if (!json) return { name: '' }
+  try {
+    const p = JSON.parse(json)
+    if (p && typeof p === 'object' && !Array.isArray(p)) {
+      return { name: String(p.name ?? '').trim(), range: p.range?.trim() || undefined, overview: p.overview?.trim() || undefined }
+    }
+  } catch { /* ignore */ }
+  return { name: '' }
+}
+export function timelinePayloadJson(p: TimelinePayload): string {
+  const o: Record<string, any> = {}
+  if (p.name) o.name = p.name
+  if (p.range) o.range = p.range
+  if (p.overview) o.overview = p.overview
+  return JSON.stringify(o)
 }
 
 /** v3.2：卡显示名（人物/地理卡取 name；一般条目回退 key） */
@@ -101,17 +209,35 @@ export function kindLabel(kind?: string): string {
   return map[kind ?? 'note'] ?? '备注'
 }
 
-/** v3.2：条目展示文本（人物/地理卡显示结构化字段，其余显示 content） */
+/** v3.2：条目展示文本（人物/地理/物品/…按 kind 显示结构化字段，其余显示 content） */
 export function entryDisplayText(e: Entry): string {
   if (e.kind === 'character') {
     const p = parseCharacterPayload(e.payloadJson)
-    const parts = [p.identity, p.realm, e.hook, e.content].filter(Boolean)
-    return parts.join(' · ')
+    return [p.identity, p.realm, e.hook, e.content].filter(Boolean).join(' · ')
   }
   if (e.kind === 'location') {
     const p = parseLocationPayload(e.payloadJson)
-    const parts = [p.region ? `区域：${p.region}` : '', p.danger != null ? `危险度：${p.danger}` : '', p.features, p.residents ? `居民：${p.residents}` : ''].filter(Boolean)
-    return parts.join(' · ')
+    return [p.region ? `区域：${p.region}` : '', p.danger != null ? `危险度：${p.danger}` : '', p.features, p.residents ? `居民：${p.residents}` : ''].filter(Boolean).join(' · ')
+  }
+  if (e.kind === 'item') {
+    const p = parseItemPayload(e.payloadJson)
+    return [p.category ? `类别：${p.category}` : '', p.effect, p.holder ? `持有：${p.holder}` : '', p.state ? `状态：${p.state}` : ''].filter(Boolean).join(' · ')
+  }
+  if (e.kind === 'event') {
+    const p = parseEventPayload(e.payloadJson)
+    return [p.time ? `时间：${p.time}` : '', p.place ? `地点：${p.place}` : '', p.detail].filter(Boolean).join(' · ')
+  }
+  if (e.kind === 'rule') {
+    const p = parseRulePayload(e.payloadJson)
+    return [p.scope ? `适用：${p.scope}` : '', p.clauses, p.consequence ? `后果：${p.consequence}` : ''].filter(Boolean).join(' · ')
+  }
+  if (e.kind === 'faction') {
+    const p = parseFactionPayload(e.payloadJson)
+    return [p.members ? `成员：${p.members}` : '', p.goal, p.territory ? `地盘：${p.territory}` : '', p.relations ? `关系：${p.relations}` : ''].filter(Boolean).join(' · ')
+  }
+  if (e.kind === 'timeline') {
+    const p = parseTimelinePayload(e.payloadJson)
+    return [p.range ? `起止：${p.range}` : '', p.overview].filter(Boolean).join(' · ')
   }
   return e.content
 }
