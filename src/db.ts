@@ -44,6 +44,10 @@ class NovelRpgDB extends Dexie {
     this.version(4).stores({
       trash: '++id, campaignId, kind, deletedAt',
     })
+    // v3.1：类型化世界书（Entry 加 kind/timeline；索引按类型/时期查询）
+    this.version(5).stores({
+      entries: '++id, worldbookId, kind, timeline, enabled, source, status, [worldbookId+kind]',
+    })
   }
 }
 

@@ -25,10 +25,49 @@ export interface Worldbook {
   updatedAt: number
 }
 
-/** 条目极简：触发词 + 内容 + 来源；key 为空 = 常驻 */
+/** v3.1：条目类型（8 类卡；本版本真正启用 character/note，其余占位待后续） */
+export type EntryKind =
+  | 'character'      // 人物卡
+  | 'location'       // 地理卡（v3.2 启用）
+  | 'item'           // 物品卡（v3.2 启用）
+  | 'event'          // 事件卡（v3.2 启用）
+  | 'rule'           // 规则卡（v3.2 启用）
+  | 'faction'        // 势力卡（v3.2 启用）
+  | 'timeline'       // 时期卡（v3.2 启用）
+  | 'note'           // 备注（默认）
+
+/** 人物卡结构化载荷（kind=character 的 payloadJson） */
+export interface CharacterPayload {
+  name: string
+  identity?: string
+  /** 境界/段位等（自由文本） */
+  realm?: string
+  /** 角色面板属性（按存档维度打分，0-10） */
+  attributes?: Array<{ label: string; value: number }>
+  /** 触发详情：核心行为逻辑/底线等（hook 常驻，本段提及角色才注入） */
+  behavior?: string
+  /** 状态条数值（Record<条名, 数值>，与老 character 表同构） */
+  barValues?: Record<string, number>
+}
+
+/**
+ * v3.1 类型化条目：世界书 = 唯一事实源。
+ * - kind 声明这条是什么卡；payload 是该卡的结构化表格
+ * - hook = 常驻注入的一句话精要；content/behavior = 触发详情
+ * - timeline = 时期标签（非当前时期自动封存）
+ */
 export interface Entry {
   id?: number
   worldbookId: number
+  /** v3.1：条目类型（缺省/旧数据视为 note） */
+  kind?: EntryKind
+  payloadJson?: string       // v3.1：结构化载荷（kind=character 时可为空字符串）
+  /** v3.1：常驻精要（每轮必读的一行；AI 生成可手改） */
+  hook?: string
+  /** v3.1：时期标签（如「神界传说」「斗二」；空 = 通用） */
+  timeline?: string
+  /** v3.1：主角标记（存档内主角人物卡；注入 P0 必带） */
+  isMain?: number            // 0/1
   key: string           // 触发词，多词用半角逗号分隔；空 = 常驻
   content: string
   enabled: number       // 0/1
@@ -92,6 +131,18 @@ export interface Campaign {
   statusCardJson?: string
   /** v2.2：状态卡当前值（Record<string, string | string[]> JSON，AI 每轮直通更新） */
   statusValuesJson?: string
+  /** v3.1：当前时期（timeline 标签；空 = 不启用时期封存） */
+  currentTimeline?: string
+  /** v3.1：注入 P1 常驻 hook 预算（条数，默认 8） */
+  injectP1Budget?: number
+  /** v3.1：剧情态势简报（大整理结果 JSON：位置/目标/大事/悬念/焦点） */
+  storyBriefJson?: string
+  /** v3.1：上次大整理的动漫流用户消息 seq（20 句自动触发游标） */
+  lastBriefGameSeq?: number
+  /** v3.1：大整理是否开启（0/1，默认 1） */
+  briefEnabled?: number
+  /** v3.1：大整理自动触发间隔（游戏流用户消息条数，默认 20） */
+  briefInterval?: number
   createdAt: number
   updatedAt: number
   lastActive: number

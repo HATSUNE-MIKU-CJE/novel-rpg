@@ -11,6 +11,7 @@ import OpCard from '../components/OpCard.vue'
 import type { Message, Character, StreamKind, Op, Entry } from '../types'
 import { parseDreamPlot, type ParsedDream } from '../engine/dreamParser'
 import { readStatusValues } from '../engine/cards'
+import { parseCharacterPayload } from '../engine/cards-v3'
 
 const ds = useDataStore()
 const chat = useChatStore()
@@ -135,6 +136,17 @@ async function refreshHeroBars() {
   if (!cid || chat.currentStream !== 'game') { heroState.value = null; return }
   const defs = chat.barDefs()
   if (!defs.length) { heroState.value = null; return }
+  // v3.1：优先读人物卡条目（kind=character 主模式，payload.barValues）；老表只读兜底
+  const mainEntry = chat.mainCharacterEntry()
+  if (mainEntry) {
+    const p = parseCharacterPayload(mainEntry.payloadJson)
+    const vals = p.barValues ?? {}
+    heroState.value = {
+      name: p.name || mainEntry.key,
+      bars: defs.map((d) => ({ name: d.name, color: d.color, max: d.max, value: vals[d.name] ?? d.max })),
+    }
+    return
+  }
   const chars = await db.characters.where('campaignId').equals(cid).toArray()
   const hero = chars[0]
   if (!hero) { heroState.value = null; return }
@@ -204,6 +216,12 @@ async function syncFromTalk() {
 async function syncFromGame() {
   const r = await chat.syncFrom('game')
   showToast(r.skipped ? '游戏进程暂无新内容' : `已整理游戏进程：角色 ${r.chars} · 关系 ${r.rels} · 新条目 ${r.facts}${r.upd ? ` · 更新 ${r.upd} 项（待确认）` : ''}`)
+}
+
+// ---- v3.1 大整理（剧情态势简报，只进交流栏） ----
+async function doBrief() {
+  const b = await chat.refreshStoryBrief()
+  showToast(b ? '剧情态势已更新（交流栏主持可见）' : '大整理失败，请检查 API 配置或剧情长度')
 }
 
 // ---- v2.0 消息内嵌操作卡（交流栏） ----
@@ -406,6 +424,9 @@ async function saveCharDetail(updated: Character) {
         <template v-if="chat.currentStream === 'talk'">
           <button class="btn btn-ghost btn-sm" :disabled="chat.compacting" @click="chat.compactContext('talk')">
             {{ chat.compacting ? '压缩中…' : '压缩' }}
+          </button>
+          <button class="btn btn-ghost btn-sm" :disabled="chat.organizing" @click="doBrief">
+            <Icon name="clipboard" :size="13" /> {{ chat.organizing ? '整理中…' : '大整理' }}
           </button>
           <button class="btn btn-warm btn-sm" :disabled="chat.organizing" @click="syncFromTalk">
             <Icon name="refresh" :size="13" /> {{ chat.organizing ? '整理中…' : '整理设定' }}

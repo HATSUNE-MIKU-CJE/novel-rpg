@@ -7,6 +7,7 @@ import { formatSpecMarkdown, formatSpecSchema } from '../engine/specExport'
 import { exportFile } from '../engine/exportFile'
 import { CATEGORIES, type AttrSchema } from '../engine/extractor'
 import { STATUS_CARD_TEMPLATE } from '../engine/cards'
+import { entryToCharacterShape, parseCharacterPayload } from '../engine/cards-v3'
 import { looksLikeSpecText } from '../engine/dreamParser'
 import { opGroup, opGroupLabel, opTitle, type OpBlock } from '../engine/ops'
 import RelationGraph from './RelationGraph.vue'
@@ -55,15 +56,42 @@ async function switchCampaign(id: number) {
 
 onMounted(() => refreshChars())
 watch(() => chat.currentCampaignId, () => refreshChars())
-watch(() => ds.entries.length, () => refreshPending())
+watch(() => ds.entries.length, () => { refreshPending(); refreshChars() })
 
 const schema = computed(() => chat.attrSchema())
 
 async function refreshChars() {
   const cid = chat.currentCampaignId
   if (!cid) { characters.value = []; relations.value = []; return }
-  characters.value = await db.characters.where('campaignId').equals(cid).toArray()
+  // v3.1：优先读世界书 kind=character 条目（唯一事实源）；老表只读兜底
+  const entries = chat.characterEntries()
+  if (entries.length) {
+    characters.value = entries.map((e) => {
+      const shape = entryToCharacterShape(e)
+      shape.campaignId = cid
+      return shape
+    })
+  } else {
+    characters.value = await db.characters.where('campaignId').equals(cid).toArray()
+  }
   relations.value = await db.relations.where('campaignId').equals(cid).toArray()
+}
+
+/** v3.1：该角色是否主角（人物卡条目 isMain=1） */
+function charIsMain(c: Character): boolean {
+  const e = chat.characterEntries().find((x) => x.id === (c as any).entryId)
+  return e?.isMain === 1
+}
+/** v3.1：该角色的时期标签 */
+function charTimelineOf(c: Character): string {
+  const e = chat.characterEntries().find((x) => x.id === (c as any).entryId)
+  return e?.timeline ?? ''
+}
+/** v3.1：手动迁移老角色表 → 人物卡条目 */
+async function migrateChars() {
+  const n = await chat.migrateLegacyCharacters()
+  showToast(n ? `已迁移 ${n} 个旧角色到人物卡` : '没有可迁移的旧角色（或已迁移）')
+  await refreshChars()
 }
 
 // ---- 自动笔记簿 ----
@@ -690,10 +718,13 @@ function showToast(msg: string) {
         角色会在 AI 整理世界书时自动生长<br />（或用下方按钮手动整理）
       </div>
       <div class="char-card-grid">
-        <div v-for="c in characters" :key="c.id" class="char-card" @click="openDetail(c)">
+        <div v-for="c in characters" :key="c.id ?? c.name" class="char-card" @click="openDetail(c)">
           <div class="char-avatar">{{ c.name.slice(0, 1) }}</div>
-          <div class="list-title">{{ c.name }}</div>
-          <div class="list-sub">{{ c.identity || '身份未知' }}<template v-if="c.realm"> · {{ c.realm }}</template></div>
+          <div class="list-title" style="display:flex; align-items:center; gap:6px">
+            {{ c.name }}
+            <span v-if="charIsMain(c)" class="entry-tag tag-constant">主角</span>
+          </div>
+          <div class="list-sub">{{ c.identity || '身份未知' }}<template v-if="c.realm"> · {{ c.realm }}</template><template v-if="charTimelineOf(c)"> · {{ charTimelineOf(c) }}</template></div>
           <div v-if="c.description" class="list-sub" style="margin-top:4px; max-height:44px; overflow:hidden">
             {{ c.description }}
           </div>
@@ -711,6 +742,10 @@ function showToast(msg: string) {
         :disabled="chat.organizing"
         @click="organizeNow"
       >{{ chat.organizing ? '思客正在记录…' : '整理世界书（提取角色/事实）' }}</button>
+      <button
+        class="btn btn-ghost btn-block" style="margin-top: 8px"
+        @click="migrateChars"
+      >迁移旧角色卡为人物卡（新模型）</button>
     </div>
 
     <!-- ===== 关系 ===== -->

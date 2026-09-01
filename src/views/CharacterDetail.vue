@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, watch } from 'vue'
 import { db } from '../db'
+import { useChatStore } from '../stores/chat'
 import RadarChart from './RadarChart.vue'
 import Icon from '../components/Icon.vue'
 import type { AttrSchema } from '../engine/extractor'
@@ -11,13 +12,17 @@ import type { Character } from '../types'
 const props = defineProps<{ character: Character; schema: AttrSchema; bars?: BarDef[] }>()
 const emit = defineEmits<{ close: []; saved: [Character] }>()
 
+const chat = useChatStore()
+
 const editing = ref(false)
 const draft = ref({ realm: '', description: '', attrs: [] as Array<{ label: string; value: number }> })
 
+/** v3.1：该角色是否绑定人物卡条目（是 → 保存写世界书，否 → 写老 characters 表） */
+const entryId = computed(() => (props.character as any).entryId as number | undefined)
+
 /** 状态条数值 */
 const barMap = computed<Record<string, number>>(() => readBarValues(props.character.barValuesJson))
-const barEdit = reff(barMap.value)
-function reff(v: Record<string, number>) { return ref({ ...v }) }
+const barEdit = ref<Record<string, number>>({ ...barMap.value })
 watch(() => props.character, (c) => { barEdit.value = { ...readBarValues(c.barValuesJson) } }, { immediate: true })
 
 /** 旧格式 attributesJson → Map(label → value) */
@@ -98,17 +103,28 @@ async function save() {
   const attrsJson = JSON.stringify(
     draft.value.attrs.filter((a) => a.label.trim() && a.value > 0).map((a) => ({ label: a.label, value: a.value })),
   )
-  const updated: Character = {
-    ...c,
-    barValuesJson: JSON.stringify(barEdit.value),
-    realm: draft.value.realm.trim() || undefined,
-    description: draft.value.description.trim(),
-    attributesJson: attrsJson,
-    updatedAt: Date.now(),
+  if (entryId.value) {
+    // v3.1：写世界书人物卡条目
+    await chat.patchCharacterEntry(entryId.value, {
+      realm: draft.value.realm.trim() || undefined,
+      behavior: draft.value.description.trim() || undefined,
+      attributes: draft.value.attrs.filter((a) => a.label.trim() && a.value > 0).map((a) => ({ label: a.label, value: a.value })),
+      barValues: { ...barEdit.value },
+    })
+  } else {
+    const updated: Character = {
+      ...c,
+      barValuesJson: JSON.stringify(barEdit.value),
+      realm: draft.value.realm.trim() || undefined,
+      description: draft.value.description.trim(),
+      attributesJson: attrsJson,
+      updatedAt: Date.now(),
+    }
+    await db.characters.put(JSON.parse(JSON.stringify(updated)))
+    emit('saved', updated)
   }
-  await db.characters.put(JSON.parse(JSON.stringify(updated)))
   editing.value = false
-  emit('saved', updated)
+  emit('saved', { ...c })
 }
 </script>
 

@@ -12,6 +12,11 @@ import {
   collectCategoryCandidates,
   parseAttrSchema, attrSchemaJson, type AttrSchema,
 } from '../engine/extractor'
+import {
+  parseCharacterPayload, characterPayloadJson, characterRowToEntry,
+  entryToCharacterShape, computeInjectionLayers, renderInjectionText,
+  type InjectionLayer,
+} from '../engine/cards-v3'
 import { parseOps, opGroup, resolveRefs, parseBars, type OpBlock } from '../engine/ops'
 import { dedupStatus } from '../engine/dedup'
 import { parseBarSchema, barSchemaJson, readBarValues, writeBarValues, type BarSchema, type BarDef } from '../engine/bars'
@@ -131,6 +136,8 @@ export const useChatStore = defineStore('chat', {
         c.gameStarted = 1
         await useDataStore().saveCampaign(c)
       }
+      // v3.1：老 characters 表 → kind=character 人物卡条目（幂等：已有同名条目跳过）
+      try { await this.migrateLegacyCharacters() } catch { /* 迁移失败不阻塞打开 */ }
       // 未开始游戏 → 先进交流栏；已开始 → 记住上次停留的流
       const started = (c?.gameStarted ?? 1) !== 0
       this.currentStream = !started ? 'talk' : ((c?.lastStream as StreamKind) ?? 'game')
@@ -175,12 +182,96 @@ export const useChatStore = defineStore('chat', {
     async charCardsText(): Promise<string> {
       const c = this.currentCampaign
       if (!c?.id) return ''
+      // v3.1：优先读世界书 kind=character 条目（唯一事实源）；老 characters 表只读兜底
+      const entries = this.characterEntries()
+      if (entries.length) {
+        const lines = entries
+          .filter((e) => e.enabled && (e.source !== 'ai' || e.status === 'accepted'))
+          .map((e) => {
+            const p = parseCharacterPayload(e.payloadJson)
+            const hook = e.hook?.trim() ? `（${e.hook.trim()}）` : ''
+            return `【人物卡 · ${p.name || e.key}】${p.identity ? p.identity + '。' : ''}${(e.content || '').trim()}${hook}`
+          })
+        return lines.join('\n')
+      }
       const chars = await db.characters.where('campaignId').equals(c.id).toArray()
       const lines = chars.map((ch) =>
         `【角色卡 · ${ch.name}】${ch.identity ? ch.identity + '。' : ''}${ch.description ?? ''}`.trim()
       )
       return lines.join('\n')
     },
+
+    // ---- v3.1：人物卡（世界书 kind=character 单源） ----
+
+    /** 当前存档的人物卡条目（kind=character，含未启用，UI 用） */
+    characterEntries(): Entry[] {
+      const c = this.currentCampaign
+      const ds = useDataStore()
+      if (!c?.notebookWorldbookId) return []
+      return ds.entriesOf(c.notebookWorldbookId).filter((e) => e.kind === 'character')
+    },
+
+    /** 当前主角人物卡条目（isMain=1；无则取第一张启用卡） */
+    mainCharacterEntry(): Entry | undefined {
+      const all = this.characterEntries()
+      return all.find((e) => e.isMain === 1) ?? all.find((e) => e.enabled)
+    },
+
+    /** 保存人物卡（条目 upsert；payload/hook/详情/时期） */
+    async saveCharacterEntry(e: Entry) {
+      if (!e.id) {
+        await db.entries.add(plainMsg(e))
+      } else {
+        await db.entries.put(plainMsg(e))
+      }
+      await useDataStore().loadAll()
+    },
+
+    /** 手改快捷：改人物卡某个字段（payload 内身分/属性/行为/状态条） */
+    async patchCharacterEntry(entryId: number, patch: {
+      name?: string; identity?: string; realm?: string; behavior?: string
+      attributes?: Array<{ label: string; value: number }>
+      barValues?: Record<string, number>
+      hook?: string; content?: string; timeline?: string; isMain?: number
+    }) {
+      const e = await db.entries.get(entryId)
+      if (!e) return false
+      const p = parseCharacterPayload(e.payloadJson)
+      if (patch.name !== undefined) p.name = patch.name.trim()
+      if (patch.identity !== undefined) p.identity = patch.identity.trim() || undefined
+      if (patch.realm !== undefined) p.realm = patch.realm.trim() || undefined
+      if (patch.behavior !== undefined) p.behavior = patch.behavior.trim() || undefined
+      if (patch.attributes !== undefined) p.attributes = patch.attributes
+      if (patch.barValues !== undefined) p.barValues = patch.barValues
+      e.payloadJson = characterPayloadJson(p)
+      if (patch.hook !== undefined) e.hook = patch.hook.trim() || undefined
+      if (patch.content !== undefined) e.content = patch.content
+      if (patch.timeline !== undefined) e.timeline = patch.timeline.trim() || undefined
+      if (patch.isMain !== undefined) e.isMain = patch.isMain
+      e.updatedAt = Date.now()
+      await db.entries.put(plainMsg(e))
+      await useDataStore().loadAll()
+      return true
+    },
+
+    /** 迁移：把老 characters 表行转成 kind=character 条目（升级/合并用） */
+    async migrateLegacyCharacters(): Promise<number> {
+      const c = this.currentCampaign
+      if (!c?.notebookWorldbookId) return 0
+      const legacy = await db.characters.where('campaignId').equals(c.id!).toArray()
+      const entries = this.characterEntries()
+      let n = 0
+      for (const row of legacy) {
+        // 已存在同名人物卡（新模型已经接管）→ 跳过
+        if (entries.some((e) => e.key.includes(row.name) || parseCharacterPayload(e.payloadJson).name === row.name)) continue
+        const e = characterRowToEntry(row, c.notebookWorldbookId)
+        await db.entries.add(plainMsg(e))
+        n++
+      }
+      if (n) await useDataStore().loadAll()
+      return n
+    },
+
 
     /** 解析存档的 DreamConfig；非内置预设/无配置时返回 null */
     dreamConfig(): DreamConfig | null {
@@ -236,6 +327,16 @@ export const useChatStore = defineStore('chat', {
       await useDataStore().saveCampaign(c)
     },
 
+    /** v3.1：当前时期（空 = 不启用时期封存） */
+    currentTimeline(): string {
+      return this.currentCampaign?.currentTimeline?.trim() ?? ''
+    },
+    /** v3.1：P1 常驻 hook 预算（条数） */
+    p1Budget(): number {
+      const n = this.currentCampaign?.injectP1Budget ?? 8
+      return Math.max(0, Math.min(30, Math.round(n)))
+    },
+
     /** v1.4：AI 梳理世界观总览（对世界书条目归纳，不抄原文） */
     async buildWorldOverview(): Promise<WorldOverview | null> {
       const c = this.currentCampaign
@@ -282,6 +383,89 @@ export const useChatStore = defineStore('chat', {
       } finally {
         this.organizing = false
       }
+    },
+
+    // ---- v3.1 大整理：剧情态势简报（只进交流栏，全知五要素） ----
+
+    /** 解析存档的剧情态势简报 */
+    storyBrief(): StoryBrief | null {
+      const c = this.currentCampaign
+      if (!c?.storyBriefJson) return null
+      try {
+        const b = JSON.parse(c.storyBriefJson)
+        return b && typeof b === 'object' ? b as StoryBrief : null
+      } catch { return null }
+    },
+
+    /**
+     * 生成/更新剧情态势简报（滚动式：上次简报 + 最近新增剧情 → 新版，300-500 字内）。
+     * 全知视角：位置/目标/最近大事/未决悬念/焦点角色 五要素。
+     */
+    async refreshStoryBrief(): Promise<StoryBrief | null> {
+      const c = this.currentCampaign
+      if (!c?.id) return null
+      const ds = useDataStore()
+      const api = ds.getDefaultApi()
+      if (!api || !api.apiKey) { this.error = '大整理需要 API 配置'; return null }
+
+      // 素材：上次简报（滚动基线，可不完整）+ 最近剧情（自上次游标起）
+      const prev = this.storyBrief()
+      const fromSeq = c.lastBriefGameSeq ?? 0
+      const recent = this.gameMessages.filter((m) => (m.seq ?? 0) > fromSeq && m.role !== 'system')
+      const recentText = recent
+        .map((m) => (m.role === 'user' ? `梦客：${m.content}` : `思客：${bodyOfMsg(m)}`))
+        .join('\n\n')
+        .slice(-24000)
+      if (!recentText.trim() && !prev) { this.error = '还没有剧情可整理'; return null }
+
+      this.organizing = true
+      try {
+        const prevText = prev
+          ? `上次简报（${new Date(prev.at).toLocaleString()}）：\n位置：${prev.position ?? '未知'}\n目标：${prev.goal ?? '未知'}\n最近大事：${(prev.events ?? []).join('；') || '无'}\n未决悬念：${(prev.mysteries ?? []).join('；') || '无'}\n焦点角色：${(prev.focus ?? []).map((f) => `${f.name}（${f.note}）`).join('、') || '无'}`
+          : '（暂无上次简报）'
+        const reply = await chatCompletion(api, [
+          {
+            role: 'system',
+            content: '你是梦境剧情的「态势简报员」。基于旧简报与最新剧情，输出当前剧情态势简报。输出严格 JSON（无其他文字、无代码块）：{"timeline":"当前时期","position":"玩家位置","goal":"当前目标（1-2句）","events":["最近大事（3-6条，每条≤20字）"],"mysteries":["未决悬念（2-4条，已解决的不再列出，解决了的作为已揭示事实可不提）"],"focus":[{"name":"角色名","note":"一句话备注"}]}。要求：滚动更新（保留仍然有效的旧信息，合并新增），总字数控制在 400 字内；events 按时间正序；已解决的悬念从 mysteries 移除。',
+          },
+          { role: 'user', content: `${prevText}\n\n=== 最新剧情（自上次简报后） ===\n\n${recentText}` },
+        ])
+        const parsed = extractJson<StoryBrief>(reply)
+        if (!parsed) return null
+        const brief: StoryBrief = {
+          timeline: parsed.timeline?.trim(),
+          position: parsed.position?.trim(),
+          goal: parsed.goal?.trim(),
+          events: Array.isArray(parsed.events) ? parsed.events.map((s) => String(s).slice(0, 40)).slice(0, 6) : [],
+          mysteries: Array.isArray(parsed.mysteries) ? parsed.mysteries.map((s) => String(s)).slice(0, 4) : [],
+          focus: Array.isArray(parsed.focus) ? parsed.focus.filter((f) => f?.name?.trim()).slice(0, 5).map((f) => ({ name: String(f.name).trim(), note: String(f.note ?? '').slice(0, 30) })) : [],
+          at: Date.now(),
+        }
+        c.storyBriefJson = JSON.stringify(brief)
+        c.lastBriefGameSeq = this.gameMessages[this.gameMessages.length - 1]?.seq ?? fromSeq
+        await ds.saveCampaign(c)
+        return brief
+      } catch (e: any) {
+        this.error = `大整理失败：${e?.message || e}`
+        return null
+      } finally {
+        this.organizing = false
+      }
+    },
+
+    /** 交流栏注入简报文本（无则空串） */
+    storyBriefText(): string {
+      const b = this.storyBrief()
+      if (!b) return ''
+      const lines = [
+        b.timeline ? `当前时期：${b.timeline}` : '',
+        b.position ? `玩家位置：${b.position}` : '',
+        b.goal ? `当前目标：${b.goal}` : '',
+        (b.events?.length ?? 0) ? `最近大事：${b.events!.map((e, i) => `${i + 1}. ${e}`).join(' ')}` : '',
+        (b.mysteries?.length ?? 0) ? `未决悬念：${b.mysteries!.join('；')}` : '',
+        (b.focus?.length ?? 0) ? `焦点角色：${b.focus!.map((f) => `${f.name}（${f.note}）`).join('、')}` : '',
+      ].filter(Boolean)
+      return lines.length ? lines.join('\n') : ''
     },
 
     /**
@@ -350,6 +534,9 @@ export const useChatStore = defineStore('chat', {
           lines.push(`【当前状态条】${barDefs.map((b) => `${b.name}（${heroVals[b.name] ?? b.max}/${b.max}）`).join('、')}；主角为第一张角色卡「${hero?.name ?? '（未建角）'}」`)
         }
         if (lines.length) parts.push(`【当前已生效的设定参考】\n${lines.join('\n').slice(0, 8000)}`)
+        // v3.1：剧情态势简报（大整理，全知视角，只进交流栏）
+        const brief = this.storyBriefText()
+        if (brief) parts.push(`【剧情态势】（当前剧情进展，主持场外情报，非玩家所知）\n${brief}`)
       }
       return parts.join('\n\n')
     },
@@ -504,14 +691,75 @@ export const useChatStore = defineStore('chat', {
       const wbIds = bindings.map((b) => b.worldbookId)
       // 自动笔记簿始终参与注入（其内 pending 条目已被过滤）
       if (campaign.notebookWorldbookId) wbIds.push(campaign.notebookWorldbookId)
-      const { constant, keyed } = this.collectInjectedEntries(wbIds)
-      // v1.2：角色卡注入开关（默认开）
-      if ((campaign.charInject ?? 1) !== 0) {
+      const { constant: baseConstant, keyed: baseKeyed } = this.collectInjectedEntries(wbIds)
+      const constant = [...baseConstant]
+      const keyed = [...baseKeyed]
+
+      // v3.1：人物卡注入分层（hook 常驻 / 详情触发 / 时期封存）。
+      // 优先用世界书 kind=character 条目；老 characters 表无此类条目时退回整表常驻（只读兼容）。
+      const charEntries = this.characterEntries()
+      const mainChar = this.mainCharacterEntry()
+      const recentText = this.gameMessages
+        .slice(-8)
+        .map((m) => bodyOfMsg(m) || m.content)
+        .join('\n')
+      const layers: InjectionLayer = computeInjectionLayers(
+        charEntries.filter((e) => e.enabled && (e.source !== 'ai' || e.status === 'accepted')),
+        mainChar?.id,
+        campaign.currentTimeline,
+        recentText,
+        this.p1Budget(),
+      )
+
+      // 状态每轮喂（P0 一部分）：当前主角状态条 + 状态卡值
+      const stateLines: string[] = []
+      if (mainChar) {
+        const p = parseCharacterPayload(mainChar.payloadJson)
+        const barDefs2 = this.barDefs()
+        if (barDefs2.length && p.barValues) {
+          for (const b of barDefs2) {
+            const v = p.barValues[b.name] ?? b.max
+            stateLines.push(`${b.name} ${v}/${b.max}`)
+          }
+        }
+        const sc = this.statusCard()
+        if (sc.enabled) {
+          const vals = readStatusValues(campaign.statusValuesJson)
+          for (const f of sc.fields.filter((x) => !x.disabled)) {
+            const v = vals[f.label]
+            if (Array.isArray(v) && v.length) stateLines.push(`${f.label}：${v.join('、')}`)
+            else if (v) stateLines.push(`${f.label}：${v}`)
+          }
+        }
+      }
+      if (stateLines.length) layers.p0.unshift(`主角状态：${stateLines.join('；')}`)
+
+      const injection = renderInjectionText(layers)
+      const charHookText = injection.constant
+      if (charHookText) {
+        // 角色/时期/基调的 hook 精要作为常驻注入（P0+P1）
+        constant.push({
+          worldbookId: campaign.notebookWorldbookId ?? 0,
+          key: '', content: charHookText, enabled: 1, source: 'manual', kind: 'note',
+          createdAt: 0, updatedAt: 0,
+        })
+      }
+      // 命中触发的人物卡详情（P2）
+      for (const detail of injection.keyed) {
+        keyed.push({
+          worldbookId: campaign.notebookWorldbookId ?? 0,
+          key: '', content: detail, enabled: 1, source: 'manual', kind: 'note',
+          createdAt: 0, updatedAt: 0,
+        })
+      }
+
+      // v3.1：仅当没有 kind=character 条目时，退回老 characters 表整表常驻（只读兼容）
+      if (charEntries.length === 0 && (campaign.charInject ?? 1) !== 0) {
         const charText = await this.charCardsText()
         if (charText) {
           constant.push({
             worldbookId: campaign.notebookWorldbookId ?? 0,
-            key: '', content: charText, enabled: 1, source: 'manual',
+            key: '', content: charText, enabled: 1, source: 'manual', kind: 'note',
             createdAt: 0, updatedAt: 0,
           })
         }
@@ -568,6 +816,16 @@ export const useChatStore = defineStore('chat', {
         const recentUsers = this.gameMessages
           .filter((m) => m.role === 'user' && m.createdAt > lastOrg).length
         if (recentUsers >= interval) this.syncFrom('game')
+      }
+
+      // v3.1 大整理：剧情态势简报自动更新（每 20 个用户消息触发，可关）
+      if ((campaign.briefEnabled ?? 1) !== 0 && !this.organizing) {
+        const fromSeq = campaign.lastBriefGameSeq ?? 0
+        const users = this.gameMessages.filter((m) => m.role === 'user' && (m.seq ?? 0) > fromSeq).length
+        if (users >= (campaign.briefInterval ?? 20)) {
+          // 不阻塞对话：fire-and-forget，失败静默（organizing 标志防并发）
+          this.refreshStoryBrief().catch(() => {})
+        }
       }
     },
 
@@ -727,18 +985,50 @@ export const useChatStore = defineStore('chat', {
       if (!defs.length) return
       const cid = this.currentCampaignId
       if (!cid) return
-      const chars = await db.characters.where('campaignId').equals(cid).toArray()
+      // v3.1：优先写人物卡条目（payload.barValues）；老 characters 表同步（只读兼容）
+      const charEntries = this.characterEntries()
       for (const u of updates) {
-        const target = (u.name && chars.find((c) => c.name === u.name)) ?? chars[0]
-        if (!target) continue
-        const cur = readBarValues(target.barValuesJson)
+        const targetName = u.name
+        const entry = targetName
+          ? charEntries.find((e) => parseCharacterPayload(e.payloadJson).name === targetName)
+          : (charEntries.find((e) => e.isMain === 1) ?? charEntries[0])
+        if (!entry) {
+          // 无人物卡条目 → 老表兜底
+          const chars = await db.characters.where('campaignId').equals(cid).toArray()
+          const target = (u.name && chars.find((c) => c.name === u.name)) ?? chars[0]
+          if (!target) continue
+          const cur = readBarValues(target.barValuesJson)
+          for (const [k, v] of Object.entries(u.values)) {
+            if (defs.some((d) => d.name === k)) cur[k] = v
+          }
+          target.barValuesJson = writeBarValues(cur, defs)
+          target.updatedAt = Date.now()
+          await db.characters.put(plainMsg(target))
+          continue
+        }
+        const p = parseCharacterPayload(entry.payloadJson)
+        const cur = { ...(p.barValues ?? {}) }
         for (const [k, v] of Object.entries(u.values)) {
           if (defs.some((d) => d.name === k)) cur[k] = v
         }
-        target.barValuesJson = writeBarValues(cur, defs)
-        target.updatedAt = Date.now()
-        await db.characters.put(plainMsg(target))
+        p.barValues = cur
+        entry.payloadJson = characterPayloadJson(p)
+        entry.updatedAt = Date.now()
+        await db.entries.put(plainMsg(entry))
+        // 老表同步（只读兼容）
+        const chars2 = await db.characters.where('campaignId').equals(cid).toArray()
+        const legacy = (u.name && chars2.find((c) => c.name === u.name)) ?? chars2[0]
+        if (legacy) {
+          const cur2 = readBarValues(legacy.barValuesJson)
+          for (const [k, v] of Object.entries(u.values)) {
+            if (defs.some((d) => d.name === k)) cur2[k] = v
+          }
+          legacy.barValuesJson = writeBarValues(cur2, defs)
+          legacy.updatedAt = Date.now()
+          await db.characters.put(plainMsg(legacy))
+        }
       }
+      await useDataStore().loadAll()
     },
 
     /** v2.2：状态卡直通更新（游戏流 [[SNAP]] 直接生效，无需审计） */
@@ -1071,29 +1361,76 @@ export const useChatStore = defineStore('chat', {
           for (const d of rm.deletedChars) if (d.id) await db.characters.delete(d.id)
         }
 
-        // 3. 写角色（按名字增量更新，属性合并；属性只保留存档维度）
+        // 3. 写角色（v3.1：kind=character 人物卡条目单源；老 characters 表保持同步供旧 UI 只读）
+        //    属性合并；属性只保留存档维度；自动生成 hook（一行精要）
         let newChars = 0, updChars = 0
+        const charEntriesNow = notebook.id ? ds.entriesOf(notebook.id).filter((e) => e.kind === 'character') : []
         for (const c of result.characters) {
           // 改名后旧名条目丢弃（AI 应只用新名输出）
           if ((result.renames ?? []).some((r) => r.from === c.name)) continue
-          const exist = chars.find((x) => x.name === c.name)
+          // 已有同名人物卡条目？
+          let entry = charEntriesNow.find((e) => parseCharacterPayload(e.payloadJson).name === c.name)
           const dimAttrs = (c.attributes ?? []).filter((a) => dimLabels.includes(a.label))
-          const attrsJson = mergeAttrs(exist?.attributesJson, dimAttrs)
-          if (exist) {
-            const changed = (c.description && c.description !== exist.description)
-              || (c.identity && c.identity !== exist.identity)
-              || (c.realm && c.realm !== exist.realm)
-              || (attrsJson !== exist.attributesJson)
+
+          if (!entry) {
+            // 新建 kind=character 条目
+            const payload = characterPayloadJson({
+              name: c.name,
+              identity: c.identity?.trim() || undefined,
+              realm: c.realm?.trim() || undefined,
+              attributes: dimAttrs,
+            })
+            entry = {
+              worldbookId: notebook.id!,
+              kind: 'character',
+              payloadJson: payload,
+              hook: `${c.name}${c.identity ? `：${c.identity}` : ''}`,
+              isMain: 0,
+              key: c.name,
+              content: c.description?.trim() ?? '',
+              enabled: 1,
+              source: 'ai',
+              status: 'accepted',
+              category: '其他',
+              createdAt: Date.now(), updatedAt: Date.now(),
+            }
+            await db.entries.add(plainMsg(entry))
+            newChars++
+          } else {
+            // 更新既有条目（合并 payload；hook 仅在缺省时生成）
+            const p = parseCharacterPayload(entry.payloadJson)
+            let changed = false
+            if (c.description && c.description !== entry.content) { entry.content = c.description.trim(); changed = true }
+            if (c.identity && c.identity !== p.identity) { p.identity = c.identity.trim(); changed = true }
+            if (c.realm && c.realm !== p.realm) { p.realm = c.realm.trim(); changed = true }
+            if (dimAttrs.length) {
+              const merged = mergeAttrs(p.attributes?.length ? JSON.stringify(p.attributes) : undefined, dimAttrs)
+              p.attributes = JSON.parse(merged!) as Array<{ label: string; value: number }>
+              changed = true
+            }
+            if (!entry.hook && (c.name || p.identity)) {
+              entry.hook = `${p.name || c.name}${p.identity ? `：${p.identity}` : ''}`
+              changed = true
+            }
             if (changed) {
-              if (c.description) exist.description = c.description
-              if (c.identity) exist.identity = c.identity
-              if (c.realm) exist.realm = c.realm
-              if (attrsJson !== undefined) exist.attributesJson = attrsJson
-              exist.source = exist.source || 'ai'
-              exist.updatedAt = Date.now()
-              await db.characters.put(plainMsg(exist))
+              entry.payloadJson = characterPayloadJson(p)
+              entry.updatedAt = Date.now()
+              await db.entries.put(plainMsg(entry))
               updChars++
             }
+          }
+
+          // 老 characters 表同步（只读兼容：旧 UI/关系图仍读它）
+          const exist = chars.find((x) => x.name === c.name)
+          const attrsJson = mergeAttrs(exist?.attributesJson, dimAttrs)
+          if (exist) {
+            if (c.description && c.description !== exist.description) exist.description = c.description
+            if (c.identity && c.identity !== exist.identity) exist.identity = c.identity
+            if (c.realm && c.realm !== exist.realm) exist.realm = c.realm
+            if (attrsJson !== undefined) exist.attributesJson = attrsJson
+            exist.source = exist.source || 'ai'
+            exist.updatedAt = Date.now()
+            await db.characters.put(plainMsg(exist))
           } else {
             await db.characters.add(plainMsg({
               campaignId: this.currentCampaignId,
@@ -1102,7 +1439,6 @@ export const useChatStore = defineStore('chat', {
               attributesJson: attrsJson,
               source: 'ai', createdAt: Date.now(), updatedAt: Date.now(),
             }))
-            newChars++
           }
         }
 
@@ -1385,6 +1721,23 @@ async function activeTalkEntries(c: Campaign): Promise<EntryType[]> {
 }
 
 interface FullReply { content: string; usage: any; reasoning?: string }
+
+/** v3.1 剧情态势简报（大整理）数据 */
+export interface StoryBrief {
+  /** 当前时期（如「斗罗大陆·主世界」） */
+  timeline?: string
+  /** 玩家位置 */
+  position?: string
+  /** 当前目标（1-2 句） */
+  goal?: string
+  /** 最近大事（3-6 条） */
+  events?: string[]
+  /** 未决悬念（2-4 条） */
+  mysteries?: string[]
+  /** 焦点角色（名字 + 一句话） */
+  focus?: Array<{ name: string; note: string }>
+  at: number
+}
 
 /** chatCompletion + usage 返回（v2.1 起主链路改用 chatCompletionStream，保留给非流式场景） */
 async function chatCompletionFull(api: ApiConfig, messages: ChatUserMessage[]): Promise<FullReply> {
