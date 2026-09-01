@@ -50,6 +50,19 @@ export interface CharacterPayload {
   barValues?: Record<string, number>
 }
 
+/** 地理卡结构化载荷（kind=location 的 payloadJson，v3.2） */
+export interface LocationPayload {
+  name: string
+  /** 所属区域（如「星斗大森林外围」） */
+  region?: string
+  /** 危险度 0-100（0=安全） */
+  danger?: number
+  /** 地貌/特色 */
+  features?: string
+  /** 居民/势力 */
+  residents?: string
+}
+
 /**
  * v3.1 类型化条目：世界书 = 唯一事实源。
  * - kind 声明这条是什么卡；payload 是该卡的结构化表格

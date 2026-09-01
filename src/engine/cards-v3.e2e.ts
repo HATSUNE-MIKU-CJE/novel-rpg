@@ -5,6 +5,7 @@
 import {
   parseCharacterPayload, characterPayloadJson, characterRowToEntry,
   entryToCharacterShape, computeInjectionLayers, renderInjectionText,
+  parseLocationPayload, locationPayloadJson,
 } from './cards-v3'
 import type { Character, Entry } from '../types'
 
@@ -86,6 +87,24 @@ const noteWorld = mkEntry({ id: 104, kind: 'note', key: '', hook: '世界观基�
 {
   const layers = computeInjectionLayers([main, inactive], 101, '斗三', '')
   check('时期=斗三 → 老龟解封入 P1', layers.p1.includes('老龟：智者'))
+}
+
+console.log('【地理卡（v3.2）】')
+const loc = parseLocationPayload(locationPayloadJson({ name: '铁炉堡', region: '东部山口', danger: 30, features: '山间要塞，常年冒烟', residents: '矮人铁匠公会' }))
+check('地理卡 payload 往返', loc.name === '铁炉堡' && loc.region === '东部山口' && loc.danger === 30)
+check('地理卡危险度钳制', parseLocationPayload(locationPayloadJson({ name: 'x', danger: 200 })).danger === 100)
+const locEntry = mkEntry({ id: 201, kind: 'location', key: '铁炉堡', hook: '铁炉堡：矮人要塞', content: '山间要塞，常年冒烟。' })
+{
+  const layers = computeInjectionLayers([main, locEntry], 101, '神界传说', '')
+  check('地理卡未提及 → P1 hook', layers.p1.includes('铁炉堡：矮人要塞'))
+  const inj = renderInjectionText(layers)
+  check('地理卡常驻段含 hook', inj.constant.includes('铁炉堡：矮人要塞'))
+}
+{
+  const layers = computeInjectionLayers([main, locEntry], 101, '神界传说', '穿过铁炉堡的城门')
+  check('提及地理卡 → P2 触发', layers.p2.some((e) => e.key === '铁炉堡'))
+  const inj = renderInjectionText(layers)
+  check('地理卡详情展开', inj.keyed.some((k) => k.includes('铁炉堡：山间要塞')))
 }
 
 console.log(`\n结果：${pass} 通过 / ${fail} 失败`)

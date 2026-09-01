@@ -7,7 +7,7 @@ import { formatSpecMarkdown, formatSpecSchema } from '../engine/specExport'
 import { exportFile } from '../engine/exportFile'
 import { CATEGORIES, type AttrSchema } from '../engine/extractor'
 import { STATUS_CARD_TEMPLATE } from '../engine/cards'
-import { entryToCharacterShape, parseCharacterPayload } from '../engine/cards-v3'
+import { entryToCharacterShape, parseCharacterPayload, parseLocationPayload, cardDisplayName, kindLabel, entryDisplayText, locationPayloadJson, characterPayloadJson } from '../engine/cards-v3'
 import { looksLikeSpecText } from '../engine/dreamParser'
 import { opGroup, opGroupLabel, opTitle, type OpBlock } from '../engine/ops'
 import RelationGraph from './RelationGraph.vue'
@@ -77,15 +77,39 @@ async function refreshChars() {
   relations.value = await db.relations.where('campaignId').equals(cid).toArray()
 }
 
-/** v3.1：该角色是否主角（人物卡条目 isMain=1） */
+/** v3.2：该角色是否主角（人物卡条目 isMain=1） */
 function charIsMain(c: Character): boolean {
   const e = chat.characterEntries().find((x) => x.id === (c as any).entryId)
   return e?.isMain === 1
+}
+/** v3.2：条目展示文本（按 kind 显示结构化字段） */
+function entryDisplay(e: Entry): string {
+  return entryDisplayText(e)
 }
 /** v3.1：该角色的时期标签 */
 function charTimelineOf(c: Character): string {
   const e = chat.characterEntries().find((x) => x.id === (c as any).entryId)
   return e?.timeline ?? ''
+}
+/** v3.2：人物卡条目 id（无绑定为 undefined） */
+function entryIdOf(c: Character): number | undefined {
+  return (c as any).entryId || undefined
+}
+/** v3.2：设为主角（清除其他主角标记） */
+async function setMainChar(c: Character) {
+  const id = entryIdOf(c)
+  if (!id) return
+  const entries = chat.characterEntries()
+  for (const e of entries) {
+    const want = e.id === id ? 1 : 0
+    if (e.isMain !== want) {
+      e.isMain = want
+      await db.entries.put(JSON.parse(JSON.stringify(e)))
+    }
+  }
+  await ds.loadAll()
+  await refreshChars()
+  showToast(`已设「${c.name}」为主角`)
 }
 /** v3.1：手动迁移老角色表 → 人物卡条目 */
 async function migrateChars() {
@@ -354,6 +378,19 @@ async function openNewEntryIn(cat: string) {
 const catSel = ref('其他')
 const catNewName = ref('')
 
+// ---- v3.2 条目编辑器：kind + 地理卡 payload ----
+const EDIT_KINDS = [
+  { value: 'note', label: '备注（普通条目）' },
+  { value: 'character', label: '人物卡' },
+  { value: 'location', label: '地理卡' },
+  { value: 'item', label: '物品卡（字段待补）' },
+  { value: 'event', label: '事件卡（字段待补）' },
+  { value: 'rule', label: '规则卡（字段待补）' },
+  { value: 'faction', label: '势力卡（字段待补）' },
+]
+const editKindSel = ref('note')
+const editLocPayload = ref<import('../types').LocationPayload>({ name: '', region: '', danger: undefined, features: '', residents: '' })
+
 // ---- v1.8 血条设定（存档级） ----
 const barDraft = ref(chat.barSchema())
 function refreshBarDraft() { barDraft.value = JSON.parse(JSON.stringify(chat.barSchema())) }
@@ -480,8 +517,18 @@ async function saveEntry() {
   const e = editEntry.value
   const isNew = !e.id
   const category = catSel.value === '__new__' ? catNewName.value.trim() : (catSel.value || '其他')
+  // v3.2：kind + payload（location 卡写入结构化 payload）
+  const kind = editKindSel.value as Entry['kind']
+  let payloadJson = e.payloadJson
+  if (kind === 'location') {
+    payloadJson = locationPayloadJson(editLocPayload.value)
+  } else if (kind === 'character' && !e.payloadJson) {
+    payloadJson = characterPayloadJson({ name: e.key.trim() })
+  }
   await ds.saveEntry({
     ...e,
+    kind,
+    payloadJson: kind === 'note' ? undefined : payloadJson,
     createdAt: e.createdAt || Date.now(),
     updatedAt: Date.now(),
     enabled: e.enabled ? 1 : 0,
@@ -603,6 +650,39 @@ async function saveTalkAuto() {
   await ds.saveCampaign(c)
   showToast(talkAutoSel.value ? `交流栏每 ${talkAutoSel.value} 条消息自动整理` : '已关闭自动整理')
 }
+
+// ---- v3.2 时期与注入（存档级） ----
+const timelineSel = ref('')
+const timelineNew = ref('')
+const p1BudgetSel = ref(8)
+function refreshTimelineUi() {
+  timelineSel.value = chat.currentTimeline()
+  p1BudgetSel.value = chat.currentCampaign?.injectP1Budget ?? 8
+}
+watch(() => chat.currentCampaignId, refreshTimelineUi)
+onMounted(refreshTimelineUi)
+// 当前时期候选 = 存档条目已用的时期标签
+const usedTimelines = computed(() => {
+  const set = new Set<string>()
+  for (const e of ds.entries) if (e.timeline?.trim()) set.add(e.timeline.trim())
+  return [...set]
+})
+async function saveTimeline() {
+  const c = chat.currentCampaign
+  if (!c) return
+  const v = timelineSel.value === '__new__' ? timelineNew.value.trim() : timelineSel.value
+  c.currentTimeline = v.trim() || undefined
+  await ds.saveCampaign(c)
+  showToast(v.trim() ? `当前时期：${v.trim()}` : '已关闭时期封存')
+  refreshTimelineUi()
+}
+async function saveP1Budget() {
+  const c = chat.currentCampaign
+  if (!c) return
+  c.injectP1Budget = Math.max(0, Math.min(30, Math.round(p1BudgetSel.value)))
+  await ds.saveCampaign(c)
+  showToast(`常驻精要预算：${c.injectP1Budget} 条`)
+}
 /** v2.0：导出全量世界书数据（诊断/备份） */
 async function exportDiagnostics() {
   const cid = chat.currentCampaignId
@@ -676,6 +756,10 @@ function openEdit(e: Entry) {
   editEntry.value = { ...e }
   catNewName.value = ''
   catSel.value = e.category || '其他'
+  // v3.2：kind 与地理卡 payload
+  editKindSel.value = e.kind && e.kind !== 'note' ? e.kind : 'note'
+  const loc = parseLocationPayload(e.payloadJson)
+  editLocPayload.value = { ...loc }
   showEntryEditor.value = true
 }
 
@@ -731,6 +815,11 @@ function showToast(msg: string) {
           <div class="entry-tag" :class="c.source === 'ai' ? 'tag-trigger' : 'tag-constant'" style="margin-top:6px">
             {{ c.source === 'ai' ? 'AI 提取' : '手动' }}
           </div>
+          <button
+            v-if="entryIdOf(c) && !charIsMain(c)"
+            class="btn btn-ghost btn-sm" style="margin-top:6px; width:100%"
+            @click.stop="setMainChar(c)"
+          >设为主角</button>
         </div>
       </div>
       <div v-if="organizeStats" class="list-sub" style="margin-top:10px; text-align:center">
@@ -996,10 +1085,11 @@ function showToast(msg: string) {
           <span class="entry-tag" :class="e.key ? 'tag-trigger' : 'tag-constant'" :style="!e.enabled ? 'opacity:.45' : ''">
             {{ !e.enabled ? '停用' : (e.key ? e.key.split(/[,，]/)[0].slice(0, 8) : '常驻') }}
           </span>
+          <span v-if="e.kind && e.kind !== 'note'" class="entry-tag tag-kind" :style="!e.enabled ? 'opacity:.45' : ''">{{ kindLabel(e.kind) }}</span>
           <div style="flex:1; min-width:0">
-            <div class="list-sub" style="white-space:pre-wrap; font-size:13px; color:var(--ink)">{{ e.content }}</div>
+            <div class="list-sub" style="white-space:pre-wrap; font-size:13px; color:var(--ink)">{{ entryDisplay(e) }}</div>
             <div class="list-sub" style="margin-top:2px; color:var(--ink-soft); font-size:10.5px">
-              {{ entrySourceLabel(e) }}<template v-if="e.updatedAt"> · {{ fmtDate(e.updatedAt) }}</template>
+              {{ entrySourceLabel(e) }}<template v-if="e.timeline"> · 时期：{{ e.timeline }}</template><template v-if="e.updatedAt"> · {{ fmtDate(e.updatedAt) }}</template>
             </div>
           </div>
           <button class="btn btn-ghost btn-sm" :title="e.enabled ? '停用' : '启用'" @click="toggleEntryEnabled(e)">{{ e.enabled ? '停' : '启' }}</button>
@@ -1069,6 +1159,32 @@ function showToast(msg: string) {
         <button class="btn btn-soft btn-block" style="margin-top:10px" @click="exportDiagnostics">
           <Icon name="download" :size="13" /> 导出世界书数据（JSON · 含待确认/回收站/操作记录）
         </button>
+      </div>
+
+      <!-- v3.2 时期与注入（存档级） -->
+      <div class="card" style="margin-bottom:12px">
+        <div style="display:flex; align-items:center; margin-bottom:8px">
+          <b style="flex:1"><Icon name="clock" :size="15" /> 时期与注入</b>
+        </div>
+        <div class="field" style="margin-top:0">
+          <label>当前时期（非当前时期的条目自动封存，不注入不触发）</label>
+          <div style="display:flex; gap:8px">
+            <select v-model="timelineSel" style="flex:1" @change="saveTimeline">
+              <option value="">关闭（不按时期封存）</option>
+              <option v-for="t in usedTimelines" :key="t" :value="t">{{ t }}</option>
+              <option value="__new__">＋ 新建时期…</option>
+            </select>
+          </div>
+          <input v-if="timelineSel === '__new__'" v-model="timelineNew" placeholder="新时期名，如：神界传说" style="margin-top:8px" />
+          <template v-if="timelineSel === '__new__'">
+            <button class="btn btn-warm btn-sm btn-block" style="margin-top:8px" @click="saveTimeline">设置新时期</button>
+          </template>
+        </div>
+        <div class="field">
+          <label>常驻精要预算（每轮最多带几条角色一句话，默认 8）</label>
+          <input v-model.number="p1BudgetSel" type="number" min="0" max="30" @change="saveP1Budget" />
+        </div>
+        <div class="list-sub">时期卡的更详细配置（多卡时期管理）在后续版本提供；当前先支持封存开关与标签。</div>
       </div>
 
       <!-- 世界书（书本卡） -->
@@ -1185,12 +1301,49 @@ function showToast(msg: string) {
       <div class="modal-sheet">
         <div class="modal-title">编辑条目</div>
         <div class="field">
+          <label>卡类型（决定这条是什么卡）</label>
+          <select v-model="editKindSel">
+            <option v-for="k in EDIT_KINDS" :key="k.value" :value="k.value">{{ k.label }}</option>
+          </select>
+        </div>
+        <div class="field">
           <label>触发词（留空 = 常驻条目，始终注入）</label>
           <input v-model="editEntry.key" placeholder="如：铁炉堡, 矮人" />
         </div>
         <div class="field">
+          <label>常驻精要（一句话，每轮必读；可留空）</label>
+          <input v-model="editEntry.hook" placeholder="如：艾莉丝：见习法师" />
+        </div>
+        <!-- 地理卡字段（kind=location） -->
+        <template v-if="editKindSel === 'location'">
+          <div class="field">
+            <label>地名</label>
+            <input v-model="editLocPayload.name" placeholder="如：铁炉堡" />
+          </div>
+          <div class="field">
+            <label>所属区域</label>
+            <input v-model="editLocPayload.region" placeholder="如：星斗大森林外围" />
+          </div>
+          <div class="field">
+            <label>危险度（0-100）</label>
+            <input v-model.number="editLocPayload.danger" type="number" min="0" max="100" placeholder="0=安全" />
+          </div>
+          <div class="field">
+            <label>地貌/特色</label>
+            <textarea v-model="editLocPayload.features" rows="2" placeholder="如：云雾缭绕的峡谷，盛产铁矿石"></textarea>
+          </div>
+          <div class="field">
+            <label>居民/势力</label>
+            <input v-model="editLocPayload.residents" placeholder="如：矮人铁匠公会" />
+          </div>
+        </template>
+        <div class="field">
           <label>内容</label>
-          <textarea v-model="editEntry.content" rows="5" placeholder="这条设定的正文…"></textarea>
+          <textarea v-model="editEntry.content" rows="5" placeholder="这条设定的正文（触发详情）…"></textarea>
+        </div>
+        <div class="field">
+          <label>时期（留空 = 通用；非当前时期自动封存）</label>
+          <input v-model="editEntry.timeline" placeholder="如：神界传说 / 斗二" />
         </div>
         <div class="field">
           <label>世界类别</label>

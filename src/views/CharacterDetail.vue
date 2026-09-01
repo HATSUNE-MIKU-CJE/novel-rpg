@@ -14,7 +14,7 @@ const emit = defineEmits<{ close: []; saved: [Character] }>()
 
 const chat = useChatStore()
 
-const editing = ref(false)
+/** v3.2：所见即所得直改——无「编辑模式」，值即改即存（回车/失焦） */
 const draft = ref({ realm: '', description: '', attrs: [] as Array<{ label: string; value: number }> })
 
 /** v3.1：该角色是否绑定人物卡条目（是 → 保存写世界书，否 → 写老 characters 表） */
@@ -42,7 +42,6 @@ function load() {
   draft.value = {
     realm: c.realm ?? '',
     description: c.description ?? '',
-    // 按存档维度对齐：缺失画 0
     attrs: props.schema.dims.map((d) => ({ label: d.label, value: map.get(d.label) ?? 0 })),
   }
 }
@@ -98,17 +97,17 @@ watch(
   { immediate: true },
 )
 
-async function save() {
+let saveTimer: number | undefined
+/** 直改保存（失焦/回车触发，轻提示不打断） */
+async function quickSave() {
+  clearTimeout(saveTimer)
   const c = props.character
-  const attrsJson = JSON.stringify(
-    draft.value.attrs.filter((a) => a.label.trim() && a.value > 0).map((a) => ({ label: a.label, value: a.value })),
-  )
+  const attrs = draft.value.attrs.filter((a) => a.label.trim() && a.value > 0).map((a) => ({ label: a.label, value: a.value }))
   if (entryId.value) {
-    // v3.1：写世界书人物卡条目
     await chat.patchCharacterEntry(entryId.value, {
       realm: draft.value.realm.trim() || undefined,
       behavior: draft.value.description.trim() || undefined,
-      attributes: draft.value.attrs.filter((a) => a.label.trim() && a.value > 0).map((a) => ({ label: a.label, value: a.value })),
+      attributes: attrs,
       barValues: { ...barEdit.value },
     })
   } else {
@@ -117,14 +116,18 @@ async function save() {
       barValuesJson: JSON.stringify(barEdit.value),
       realm: draft.value.realm.trim() || undefined,
       description: draft.value.description.trim(),
-      attributesJson: attrsJson,
+      attributesJson: JSON.stringify(attrs),
       updatedAt: Date.now(),
     }
     await db.characters.put(JSON.parse(JSON.stringify(updated)))
     emit('saved', updated)
   }
-  editing.value = false
-  emit('saved', { ...c })
+  emit('saved', { ...props.character })
+}
+/** 数值输入：数字变化即保存（小延迟合并） */
+function onValueChange() {
+  clearTimeout(saveTimer)
+  saveTimer = window.setTimeout(() => { quickSave() }, 600)
 }
 </script>
 
@@ -145,47 +148,46 @@ async function save() {
       <button class="btn btn-ghost btn-sm" @click="emit('close')">✕</button>
     </div>
 
-    <!-- 六维能力雷达 -->
+    <!-- 六维能力雷达（直改：数值输入框常显） -->
     <div style="max-width:640px; margin:10px auto 0" class="card">
       <label style="display:block; font-size:13px; font-weight:600; color:var(--ink-soft); margin-bottom:6px">
         🧭 能力雷达{{ realmLabel ? ` · ${realmLabel}` : '' }}
       </label>
       <RadarChart :attrs="radarAttrs" :max="(schema.maxValue ?? 10)" />
-      <div v-if="editing" class="attr-edit-list">
-        <label style="font-size:13px; font-weight:600; color:var(--ink-soft); margin:8px 0 4px">数值（0-10）</label>
+      <div class="attr-edit-list">
+        <label style="font-size:13px; font-weight:600; color:var(--ink-soft); margin:8px 0 4px">数值（点数字即改，鼠标移开自动保存）</label>
         <div v-for="a in draft.attrs" :key="a.label" class="attr-edit-row">
           <span style="flex:1; font-size:14px; font-weight:600">{{ a.label }}</span>
-          <input v-model.number="a.value" type="number" min="0" :max="(schema.maxValue ?? 10)" style="width:70px" />
+          <input v-model.number="a.value" type="number" min="0" :max="(schema.maxValue ?? 10)" style="width:70px" @change="onValueChange" />
         </div>
         <div v-if="realmLabel" class="field" style="margin-top:10px">
-          <label>{{ realmLabel }}</label>
-          <input v-model="draft.realm" :placeholder="`如：金丹期 / 见习法师`" />
+          <label>{{ realmLabel }}（点即改）</label>
+          <input v-model="draft.realm" :placeholder="`如：金丹期 / 见习法师`" @change="onValueChange" />
         </div>
       </div>
     </div>
 
-    <!-- 状态条 -->
+    <!-- 状态条（直改） -->
     <div v-if="(bars || []).length" class="card" style="max-width:640px; margin:12px auto 0">
-      <label style="display:flex; align-items:center; gap:5px; font-size:13px; font-weight:600; color:var(--ink-soft); margin-bottom:6px"><Icon name="sliders" :size="15" /> 状态条</label>
+      <label style="display:flex; align-items:center; gap:5px; font-size:13px; font-weight:600; color:var(--ink-soft); margin-bottom:6px"><Icon name="sliders" :size="15" /> 状态条（点数字即改）</label>
       <div v-for="b in bars" :key="b.id" class="hud-row">
         <span class="hud-name">{{ b.name }}</span>
         <div class="bar-track" style="flex:1">
           <div class="bar-fill" :style="{ width: Math.min(100, ((barMap[b.name] ?? 0) / b.max) * 100) + '%', background: b.color }"></div>
         </div>
         <input
-          v-if="editing"
           v-model.number="barEdit[b.name]"
           type="number" min="0" :max="b.max" style="width:70px"
+          @change="onValueChange"
         />
-        <span v-else class="hud-val">{{ barMap[b.name] ?? 0 }}/{{ b.max }}</span>
+        <span class="hud-val">/{{ b.max }}</span>
       </div>
     </div>
 
-    <!-- 描述 -->
+    <!-- 描述（直改） -->
     <div class="card" style="max-width:640px; margin:12px auto 0">
-      <label style="display:flex; align-items:center; gap:5px; font-size:13px; font-weight:600; color:var(--ink-soft); margin-bottom:6px"><Icon name="doc" :size="15" /> 描述</label>
-      <textarea v-if="editing" v-model="draft.description" rows="4"></textarea>
-      <div v-else class="char-desc">{{ character.description || '暂无描述' }}</div>
+      <label style="display:flex; align-items:center; gap:5px; font-size:13px; font-weight:600; color:var(--ink-soft); margin-bottom:6px"><Icon name="doc" :size="15" /> 描述（点即改）</label>
+      <textarea v-model="draft.description" rows="4" @change="onValueChange"></textarea>
     </div>
 
     <!-- 关系 -->
@@ -204,15 +206,6 @@ async function save() {
         <span class="entry-tag" :class="e.key === '常驻' ? 'tag-constant' : 'tag-trigger'">{{ e.key === '常驻' ? '常驻' : e.key.slice(0, 8) }}</span>
         <div class="list-sub" style="white-space:pre-wrap; flex:1">{{ e.content.slice(0, 60) }}{{ e.content.length > 60 ? '…' : '' }}</div>
       </div>
-    </div>
-
-    <!-- 操作 -->
-    <div style="max-width:640px; margin:16px auto 0; display:flex; gap:10px">
-      <template v-if="editing">
-        <button class="btn btn-ghost" style="flex:1" @click="editing = false">取消</button>
-        <button class="btn btn-primary" style="flex:2" @click="save">保存</button>
-      </template>
-      <button v-else class="btn btn-warm btn-block" @click="editing = true"><Icon name="pencil" :size="14" /> 编辑角色卡</button>
     </div>
   </div>
 </template>

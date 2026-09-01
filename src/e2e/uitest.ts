@@ -281,7 +281,8 @@ check('全屏页标题', await page.getByText('艾莉丝', { exact: true }).coun
 check('能力雷达出现', await page.getByText('能力雷达').count() > 0)
 check('六维雷达渲染', await page.locator('svg polygon[fill="var(--accent)"]').count() > 0)
 check('境界显示', await page.getByText('炼气三层', { exact: false }).count() > 0)
-check('编辑按钮（可编辑）', await page.getByRole('button', { name: /编辑角色卡/ }).count() > 0)
+check('直改输入框（所见即所得）', await page.locator('.attr-edit-list input[type=number]').count() > 0)
+check('描述直改 textarea', await page.locator('textarea[rows="4"]').count() > 0)
 await page.getByRole('button', { name: '✕' }).click()
 await page.waitForTimeout(300)
 

@@ -87,7 +87,11 @@ textarea { resize: vertical; min-height: 60px; }
   padding: 14px;
 }
 
-.page { padding: 12px 14px 84px; max-width: 640px; margin: 0 auto; }
+/* v3.1.2：面板/设置页显式滚动容器 + 底部避让 tabbar/safe-area/键盘（根治内容被遮挡拖不出） */
+.page {
+  padding: 12px 14px calc(110px + env(safe-area-inset-bottom, 0px) + var(--kb-h, 0px));
+  max-width: 640px; margin: 0 auto;
+}
 
 .page-title { font-size: 17px; font-weight: 700; margin: 8px 4px 12px; }
 

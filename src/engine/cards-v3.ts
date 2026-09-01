@@ -9,7 +9,7 @@
  *   entryToLegacyShape（渲染层继续读老字段，避免 UI 大改）
  */
 
-import type { Entry, CharacterPayload, Character } from '../types'
+import type { Entry, CharacterPayload, Character, LocationPayload } from '../types'
 
 // ---------------- payload 读写（纯函数，坏数据安全） ----------------
 
@@ -49,6 +49,71 @@ export function characterPayloadJson(p: CharacterPayload): string {
   if (p.behavior) out.behavior = p.behavior
   if (p.barValues && Object.keys(p.barValues).length) out.barValues = p.barValues
   return JSON.stringify(out)
+}
+
+/** v3.2：地理卡 payload */
+export function parseLocationPayload(json?: string): LocationPayload {
+  if (!json) return { name: '' }
+  try {
+    const p = JSON.parse(json)
+    if (p && typeof p === 'object' && !Array.isArray(p)) {
+      return {
+        name: String(p.name ?? '').trim(),
+        region: p.region?.trim() || undefined,
+        danger: typeof p.danger === 'number' && isFinite(p.danger) ? Math.max(0, Math.min(100, Math.round(p.danger))) : undefined,
+        features: p.features?.trim() || undefined,
+        residents: p.residents?.trim() || undefined,
+      }
+    }
+  } catch { /* 坏数据 → 空 */ }
+  return { name: '' }
+}
+
+export function locationPayloadJson(p: LocationPayload): string {
+  const out: Record<string, any> = {}
+  if (p.name) out.name = p.name
+  if (p.region) out.region = p.region
+  if (p.danger != null) out.danger = p.danger
+  if (p.features) out.features = p.features
+  if (p.residents) out.residents = p.residents
+  return JSON.stringify(out)
+}
+
+/** v3.2：按 kind 解析 payload（注入/渲染共用） */
+export function parseCardPayload(kind: string, json?: string): any {
+  if (kind === 'character') return parseCharacterPayload(json)
+  if (kind === 'location') return parseLocationPayload(json)
+  return {}
+}
+
+/** v3.2：卡显示名（人物/地理卡取 name；一般条目回退 key） */
+export function cardDisplayName(kind: string, payload: any, key: string): string {
+  if (payload?.name) return payload.name
+  return key || '未命名'
+}
+
+/** v3.2：kind 中文标签（UI 徽标用） */
+export function kindLabel(kind?: string): string {
+  const map: Record<string, string> = {
+    character: '人物卡', location: '地理卡', item: '物品卡', event: '事件卡',
+    rule: '规则卡', faction: '势力卡', timeline: '时期卡', note: '备注',
+  }
+  return map[kind ?? 'note'] ?? '备注'
+}
+
+/** v3.2：条目展示文本（人物/地理卡显示结构化字段，其余显示 content） */
+export function entryDisplayText(e: Entry): string {
+  if (e.kind === 'character') {
+    const p = parseCharacterPayload(e.payloadJson)
+    const parts = [p.identity, p.realm, e.hook, e.content].filter(Boolean)
+    return parts.join(' · ')
+  }
+  if (e.kind === 'location') {
+    const p = parseLocationPayload(e.payloadJson)
+    const parts = [p.region ? `区域：${p.region}` : '', p.danger != null ? `危险度：${p.danger}` : '', p.features, p.residents ? `居民：${p.residents}` : ''].filter(Boolean)
+    return parts.join(' · ')
+  }
+  return e.content
 }
 
 // ---------------- 老表 → 人物卡条目（迁移/升级/合并） ----------------
@@ -157,7 +222,8 @@ export function computeInjectionLayers(
     // P0：主角卡 hook + 时期卡 hook（note/其他 kind 的常驻由 v2 注入机制处理，避免重复）
     if (mainIs.has(e.id ?? -1) && hook) { p0.push(hook); continue }
     if ((e.kind === 'timeline') && hook) { p0.push(hook); continue }
-    if (e.kind !== 'character') continue // 非人物/时期卡不参与 hook 分层（老世界书 note 走 v2 机制）
+    // v3.2：人物/地理卡参与 hook 分层（P1 排队 + P2 触发）；其余 kind 走 v2 note 机制
+    if (e.kind !== 'character' && e.kind !== 'location') continue
 
     // 触发匹配？
     const keys = e.key.split(/[,，]/).map((k) => k.trim()).filter(Boolean)
@@ -178,8 +244,8 @@ export function renderInjectionText(layers: InjectionLayer): { constant: string;
     ...layers.p1.map((h) => `【${h}】`),
   ].join('\n')
   const keyed = layers.p2.map((e) => {
-    const p = e.kind === 'character' ? parseCharacterPayload(e.payloadJson) : null
-    const detail = e.content?.trim() || p?.behavior?.trim() || ''
+    const p = parseCardPayload(e.kind ?? 'note', e.payloadJson)
+    const detail = e.content?.trim() || p?.behavior?.trim() || p?.features?.trim() || ''
     if (!detail) return ''
     const head = p?.name || e.key
     return `${head}：${detail}`
