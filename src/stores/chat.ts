@@ -38,9 +38,11 @@ export function bodyOfMsg(m: Message): string {
   } catch { return m.content }
 }
 
-/** v3.5：内容是否残留 ST 结构（宏/HTML 标签/--- 分隔线），用于存量脏卡自愈 */
+/** v3.5：内容是否残留 ST 结构（宏/HTML 标签/--- 分隔线/markdown 标记/英文音译注释），用于存量脏卡自愈 */
 function hasStResidue(s: string): boolean {
   return /\{\{[^{}]{1,160}\}\}/.test(s) || /<!--/.test(s) || /<[a-zA-Z][^>]{0,80}>/.test(s) || /^\s*-{3,}\s*$/m.test(s)
+    || /^#{1,6}\s+/m.test(s) || /^\s*[-*+]\s+/m.test(s) || /\*\*/.test(s) || /`[^`\n]{1,200}`/.test(s)
+    || /\([A-Za-z][A-Za-z0-9 .\-_]{0,40}\)/.test(s)
 }
 
 /** v3.2：归一化 AI 给的 kind（非法/占位 → note） */
@@ -149,8 +151,10 @@ export const useChatStore = defineStore('chat', {
       }
       // v3.1：老 characters 表 → kind=character 人物卡条目（幂等：已有同名条目跳过）
       try { await this.migrateLegacyCharacters() } catch { /* 迁移失败不阻塞打开 */ }
-      // v3.5：已绑定世界书的人物卡补接入笔记簿（绑定即自动生卡；存量场景幂等修复）
+      // v3.5.1：已绑定世界书的人物卡补接入笔记簿（绑定即自动生卡；存量场景幂等修复）
       try { await this.syncBoundCards() } catch { /* 补齐失败不阻塞打开 */ }
+      // v3.5.2：笔记簿存量条目内容净化（旧导入残留 markdown/标签 → 重开存档自愈）
+      try { await this.cleanNotebookCards() } catch { /* 净化失败不阻塞打开 */ }
       // 未开始游戏 → 先进交流栏；已开始 → 记住上次停留的流
       const started = (c?.gameStarted ?? 1) !== 0
       this.currentStream = !started ? 'talk' : ((c?.lastStream as StreamKind) ?? 'game')
@@ -290,6 +294,28 @@ export const useChatStore = defineStore('chat', {
       let total = 0
       for (const b of bs) total += await this.importBoundCardsToNotebook(b.worldbookId)
       return total
+    },
+
+    /**
+     * v3.5.2：笔记簿存量净化——旧版导入的数据（未清洗 markdown/标签/英文注释）重开存档自愈。
+     * 幂等：无残留不动；含残留的条目清洗更新。
+     * @returns 本次清洗的条数
+     */
+    async cleanNotebookCards(): Promise<number> {
+      const c = this.currentCampaign
+      if (!c?.notebookWorldbookId) return 0
+      const ds = useDataStore()
+      const entries = ds.entriesOf(c.notebookWorldbookId)
+      let n = 0
+      for (const e of entries) {
+        if (!hasStResidue(e.content ?? '')) continue
+        e.content = cleanImportedContent(e.content ?? '')
+        e.updatedAt = Date.now()
+        await db.entries.put(plainMsg(e))
+        n++
+      }
+      if (n) await ds.loadAll()
+      return n
     },
 
     /** 保存人物卡（条目 upsert；payload/hook/详情/时期） */

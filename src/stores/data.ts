@@ -39,10 +39,12 @@ export function guessHookFromEntry(e: any, kind: string): string | undefined {
 
 /**
  * v3.5：SillyTavern 导入内容清洗（世界书设定文本 → App 纯文本）。
- * ST 世界书条目常带运行时结构（宏/HTML 标签/--- 分隔线），导入后原样显示很违和，
- * 这里在入库时统一剥离：
+ * ST 世界书条目常带运行时结构（宏/HTML 标签/--- 分隔线）与 markdown 排版，
+ * 导入后原样显示很违和，这里在入库时统一剥离：
  *   - {{...}} 宏标记（{{char}}/{{getvar::..}}/{{setvar::..}} 等）→ 删除
- *   - <!-- 注释 -->、<标签> 尖括号结构 → 删除
+ *   - <!-- 注释 -->、<标签> 尖括号结构（含 ST 锚点 <faction_xxx>/<rule_xxx>/<worldview_detail_xxx>）→ 删除
+ *   - markdown 结构 → 纯文本：# 标题标记、行首列表符号（-、*、+）、加粗、下划线、斜体、行内代码标记（反引号）
+ *   - 英文音译括号注释（如 (Tang San)）→ 删除（正文中英文紧随中文名的注音，UI 显示违和）
  *   - 独立行的 --- 分隔线 → 删除
  *   - \r、多余连续空行 → 归一
  */
@@ -53,6 +55,16 @@ export function cleanImportedContent(s: string): string {
   t = t.replace(/<!--[\s\S]*?-->/g, '')
   // 尖括号标签（含闭合）：<faction_武魂殿>、<rule_经济系统>、<worldview_detail_xxx> 等 ST 锚点
   t = t.replace(/<\/?[a-zA-Z][^>]{0,80}>/g, '')
+  // markdown：行首标题标记 / 列表标记（后跟空格，允许缩进）→ 去掉标记保留正文
+  t = t.replace(/^[ \t]*#{1,6}\s+/gm, '')
+  t = t.replace(/^\s*[-*+]\s+/gm, '')
+  // markdown：加粗/下划线/斜体/行内代码 → 原文
+  t = t.replace(/\*\*([^*\n]{1,200})\*\*/g, '$1')
+  t = t.replace(/__([^_\n]{1,200})__/g, '$1')
+  t = t.replace(/\*([^*\n]{1,200})\*/g, '$1')
+  t = t.replace(/`{1,3}([^`\n]{1,200})`{1,3}/g, '$1')
+  // 英文音译括号注释：(Tang San) / (Xiao Wu) 等
+  t = t.replace(/\([A-Za-z][A-Za-z0-9 .\-_]{0,40}\)/g, '')
   // 独立行的 --- 分隔线删除；保留正文缩进（设定文本层级依赖缩进）
   t = t.split('\n').map((l) => (/^\s*-{3,}\s*$/.test(l) ? '' : l)).join('\n')
   t = t.replace(/[ \t]+$/gm, '').replace(/\n{3,}/g, '\n\n')
