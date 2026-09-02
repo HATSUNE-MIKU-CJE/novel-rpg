@@ -626,6 +626,15 @@ async function toggleBindCampaign(cid: number) {
     await db.campaignBindings.delete(exist.id!)
   } else {
     await db.campaignBindings.add({ campaignId: cid, worldbookId: wb.id, mode: 'ref', createdAt: Date.now() })
+    // v3.5：绑定即自动接入——人物卡（kind=character）并入该存档笔记簿卡体系；
+    // 非当前存档时延迟到打开存档时补齐（openCampaign → syncBoundCards）
+    if (cid === chat.currentCampaignId) {
+      const n = await chat.importBoundCardsToNotebook(wb.id)
+      showToast(n ? `已绑定，接入 ${n} 张人物卡` : '已绑定')
+      await refreshChars()
+    } else {
+      showToast('已绑定（打开该存档时自动接入人物卡）')
+    }
   }
   bindChecks.value = { ...bindChecks.value, [cid]: !bindChecks.value[cid] }
   await refreshBindings()
@@ -848,7 +857,7 @@ function showToast(msg: string) {
             {{ c.description }}
           </div>
           <div class="entry-tag" :class="c.source === 'ai' ? 'tag-trigger' : 'tag-constant'" style="margin-top:6px">
-            {{ c.source === 'ai' ? 'AI 提取' : '手动' }}
+            {{ c.source === 'ai' ? 'AI 提取' : (c.source === 'imported' ? '导入' : '手动') }}
           </div>
           <button
             v-if="entryIdOf(c) && !charIsMain(c)"
@@ -1429,14 +1438,14 @@ function showToast(msg: string) {
         <div class="modal-title">导入世界书（JSON）</div>
         <div class="list-sub" style="margin-bottom:10px">
           支持本 App 规范（version/worldbook/entries/characters/relations）与 SillyTavern world_info 格式。
-          角色与关系会写入当前存档（{{ campaignName }}）。
+          导入时自动清洗 ST 原文（&#123;&#123;宏&#125;&#125;/标签/--- 分隔线），人物卡自动生成结构化卡面。
         </div>
         <div class="field" style="margin-bottom:10px">
           <label class="chk-label" style="display:flex; align-items:center; gap:8px; cursor:pointer; margin:0">
             <input v-model="importIntoNotebook" type="checkbox" :disabled="!chat.currentCampaignId" />
             <span style="flex:1">导入到当前存档的自动笔记簿{{ chat.currentCampaignId ? '' : '（未开存档，自动改为新建）' }}</span>
           </label>
-          <div class="list-sub" style="margin-top:4px">勾选后人物卡立即进「角色」tab（可设主角/状态卡），世界设定按触发词注入；不勾则新建一本世界书，需手动绑定。</div>
+          <div class="list-sub" style="margin-top:4px">勾选后人物卡立即进「角色」tab（可设主角/状态卡），世界设定按触发词注入；不勾则新建一本世界书，之后「绑定」到存档时人物卡也会自动接入。</div>
         </div>
         <div class="field">
           <label style="margin-bottom:8px">方式一：选择文件（自动识别填入）</label>
@@ -1488,7 +1497,7 @@ function showToast(msg: string) {
       <div class="modal-sheet">
         <div class="modal-title">绑定存档 —— {{ bindPickerWb?.name }}</div>
         <div class="list-sub" style="margin-bottom:8px">
-          被勾选的存档，其对话会注入这本书的已确认条目。
+          被勾选的存档，其对话会注入这本书的已确认条目；书中的「人物卡」会自动接入该存档的角色 tab。
         </div>
         <div v-if="!ds.campaigns.length" class="empty-hint">还没有存档</div>
         <div v-for="c in ds.campaigns" :key="c.id" class="list-row">

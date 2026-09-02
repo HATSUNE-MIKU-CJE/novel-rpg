@@ -302,7 +302,7 @@ export function entryToCharacterShape(e: Entry): Character & { entryId: number }
     attributesJson: p.attributes?.length ? JSON.stringify(p.attributes) : undefined,
     barValuesJson: p.barValues && Object.keys(p.barValues).length ? JSON.stringify(p.barValues) : undefined,
     description: e.content || (p.behavior ? p.behavior : ''),
-    source: e.source === 'manual' ? 'manual' : 'ai',
+    source: e.source,
     createdAt: e.createdAt,
     updatedAt: e.updatedAt,
   }

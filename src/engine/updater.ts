@@ -72,7 +72,7 @@ async function fetchWithTimeout(url: string, headers: Record<string, string>, ti
  */
 export async function checkForUpdate(
   repo = UPDATE_REPO,
-  currentVersion = '1.1.0',
+  currentVersion = '3.5.0',
 ): Promise<UpdateInfo> {
   const m = repo.match(OWNER_REPO_RE)
   if (!m) throw new Error('仓库格式错误：应为 owner/repo')

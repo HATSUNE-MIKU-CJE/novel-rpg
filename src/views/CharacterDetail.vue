@@ -142,7 +142,7 @@ function onValueChange() {
         <div class="list-sub">
           {{ character.identity || '身份未知' }} ·
           <template v-if="realmLabel && character.realm">{{ realmLabel }}：{{ character.realm }} · </template>
-          {{ character.source === 'ai' ? 'AI 提取' : '手动' }}
+          {{ character.source === 'ai' ? 'AI 提取' : (character.source === 'imported' ? '导入' : '手动') }}
         </div>
       </div>
       <button class="btn btn-ghost btn-sm" @click="emit('close')">✕</button>

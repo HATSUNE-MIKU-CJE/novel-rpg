@@ -266,7 +266,8 @@ export interface Character {
   barValuesJson?: string
   statusJson?: string
   description?: string
-  source: 'manual' | 'ai'
+  /** v3.5：imported = 世界书导入（卡面显示「导入」而非「AI 提取」） */
+  source: 'manual' | 'ai' | 'imported'
   createdAt: number
   updatedAt: number
 }

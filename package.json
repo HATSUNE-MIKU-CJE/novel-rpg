@@ -1,7 +1,7 @@
 {
   "name": "novel-rpg",
   "private": true,
-  "version": "1.1.1",
+  "version": "3.5.0",
   "description": "AI 视觉小说 / 跑团小工具",
   "type": "module",
   "scripts": {

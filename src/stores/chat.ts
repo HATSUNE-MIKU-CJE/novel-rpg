@@ -2,7 +2,7 @@ import { defineStore } from 'pinia'
 import { toRaw } from 'vue'
 import { db } from '../db'
 import type { Message, Campaign, ApiConfig, Entry, StreamKind, StatusCardDef } from '../types'
-import { useDataStore } from './data'
+import { useDataStore, cleanImportedContent } from './data'
 import { renderPromptChain, chatCompletion, chatCompletionStream, type ChatUserMessage } from '../engine/pipeline'
 import { parseDreamPlot } from '../engine/dreamParser'
 import { buildDreamPromptBlocks, defaultDreamConfig, TALK_SYSTEM, type DreamConfig } from '../engine/dreamPreset'
@@ -36,6 +36,11 @@ export function bodyOfMsg(m: Message): string {
     const p = m.parsedJson ? JSON.parse(m.parsedJson) : null
     return p?.body || m.content
   } catch { return m.content }
+}
+
+/** v3.5：内容是否残留 ST 结构（宏/HTML 标签/--- 分隔线），用于存量脏卡自愈 */
+function hasStResidue(s: string): boolean {
+  return /\{\{[^{}]{1,160}\}\}/.test(s) || /<!--/.test(s) || /<[a-zA-Z][^>]{0,80}>/.test(s) || /^\s*-{3,}\s*$/m.test(s)
 }
 
 /** v3.2：归一化 AI 给的 kind（非法/占位 → note） */
@@ -144,6 +149,8 @@ export const useChatStore = defineStore('chat', {
       }
       // v3.1：老 characters 表 → kind=character 人物卡条目（幂等：已有同名条目跳过）
       try { await this.migrateLegacyCharacters() } catch { /* 迁移失败不阻塞打开 */ }
+      // v3.5：已绑定世界书的人物卡补接入笔记簿（绑定即自动生卡；存量场景幂等修复）
+      try { await this.syncBoundCards() } catch { /* 补齐失败不阻塞打开 */ }
       // 未开始游戏 → 先进交流栏；已开始 → 记住上次停留的流
       const started = (c?.gameStarted ?? 1) !== 0
       this.currentStream = !started ? 'talk' : ((c?.lastStream as StreamKind) ?? 'game')
@@ -172,6 +179,8 @@ export const useChatStore = defineStore('chat', {
       for (const wbId of worldbookIds) {
         for (const e of ds.entriesOf(wbId)) {
           if (!e.enabled || !e.content.trim()) continue
+          // v3.5：人物/地理卡走分层注入（P0/P1/P2），此处跳过避免与分层重复注入
+          if (e.kind === 'character' || e.kind === 'location') continue
           // 注入策略：AI 条目仅 accepted 进入上下文（pending 待审阅不注入）
           if (e.source === 'ai' && e.status !== 'accepted') continue
           if (!e.key.trim()) { constant.push(e); continue }
@@ -221,6 +230,66 @@ export const useChatStore = defineStore('chat', {
     mainCharacterEntry(): Entry | undefined {
       const all = this.characterEntries()
       return all.find((e) => e.isMain === 1) ?? all.find((e) => e.enabled)
+    },
+
+    /**
+     * v3.5：绑定自动接入——把一本世界书的 kind=character 人物卡并入当前存档笔记簿。
+     * 幂等：笔记簿已有同名（payload.name / hook / key 命中）卡则跳过。
+     * 复制而非移动：原世界书保持完整（多存档共享同一本书时互不干扰）；
+     * 人物卡注入由分层（P0/P1/P2）负责，collectInjectedEntries 已跳过 character 类。
+     * @returns 本次新接入的张数
+     */
+    async importBoundCardsToNotebook(wbId: number): Promise<number> {
+      const c = this.currentCampaign
+      if (!c?.id || !wbId) return 0
+      const ds = useDataStore()
+      const cards = ds.entriesOf(wbId).filter((e) => e.kind === 'character' && e.enabled !== 0)
+      if (!cards.length) return 0
+      // 确保笔记簿存在（无目标时自动创建，兼容旧档）
+      const nbId = (await this.ensureNotebook()).id!
+      const existing = ds.entriesOf(nbId).filter((e) => e.kind === 'character')
+      let n = 0
+      for (const card of cards) {
+        const p = parseCharacterPayload(card.payloadJson)
+        const nm = p.name?.trim() || card.hook?.split(/[：:]/)[0]?.trim() || (card.key ?? '').split(/[,，]/)[0]?.trim() || ''
+        if (!nm) continue
+        const existingHit = existing.find((e) => {
+          const ep = parseCharacterPayload(e.payloadJson)
+          return ep.name === nm || e.hook === nm || (e.key ?? '').split(/[,，]/).includes(nm)
+        })
+        if (existingHit) {
+          // 存量自愈：同名卡内容仍残留 ST 结构（导入清洗上线前的旧数据）→ 清洗一次
+          if (hasStResidue(existingHit.content ?? '')) {
+            existingHit.content = cleanImportedContent(existingHit.content ?? '')
+            existingHit.updatedAt = Date.now()
+            await db.entries.put(plainMsg(existingHit))
+          }
+          continue
+        }
+        const copy: Entry = {
+          ...plainMsg(card),
+          id: undefined,
+          worldbookId: nbId,
+          createdAt: Date.now(),
+          updatedAt: Date.now(),
+          status: card.source === 'ai' ? 'accepted' : card.status,
+        }
+        await db.entries.add(plainMsg(copy))
+        existing.push(copy)
+        n++
+      }
+      if (n) await ds.loadAll()
+      return n
+    },
+
+    /** v3.5：存档所有绑定书的人物卡补接入（存量修复：之前绑定未生卡的场景） */
+    async syncBoundCards(): Promise<number> {
+      const cid = this.currentCampaignId
+      if (!cid) return 0
+      const bs = await db.campaignBindings.where('campaignId').equals(cid).toArray()
+      let total = 0
+      for (const b of bs) total += await this.importBoundCardsToNotebook(b.worldbookId)
+      return total
     },
 
     /** 保存人物卡（条目 upsert；payload/hook/详情/时期） */

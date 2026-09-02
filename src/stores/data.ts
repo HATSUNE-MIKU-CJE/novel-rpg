@@ -5,6 +5,7 @@ import type { ApiConfig, Preset, Worldbook, Entry, Campaign, TrashItem } from '.
 import { parseStPresetJson, type ImportedPreset } from '../engine/presetImport'
 import { seedBuiltinNodes } from '../engine/builtinNodes'
 import { defaultDreamConfig, DREAM_PRESET_NAME } from '../engine/dreamPreset'
+import { parseCharacterPayload, characterPayloadJson } from '../engine/cards-v3'
 
 /** 剥离 Vue 响应式代理，得到 IndexedDB 可序列化的纯对象 */
 function plain<T>(obj: T): T {
@@ -33,6 +34,48 @@ export function guessHookFromEntry(e: any, kind: string): string | undefined {
   // 形如「👤斗三：唐舞桐」→ 冒号后为名；「🔮物品名」→ 物品名
   const m = c.match(/[：:]\s*(.+?)$/)
   if (m?.[1]?.trim()) return m[1].trim()
+  return undefined
+}
+
+/**
+ * v3.5：SillyTavern 导入内容清洗（世界书设定文本 → App 纯文本）。
+ * ST 世界书条目常带运行时结构（宏/HTML 标签/--- 分隔线），导入后原样显示很违和，
+ * 这里在入库时统一剥离：
+ *   - {{...}} 宏标记（{{char}}/{{getvar::..}}/{{setvar::..}} 等）→ 删除
+ *   - <!-- 注释 -->、<标签> 尖括号结构 → 删除
+ *   - 独立行的 --- 分隔线 → 删除
+ *   - \r、多余连续空行 → 归一
+ */
+export function cleanImportedContent(s: string): string {
+  let t = String(s ?? '')
+  t = t.replace(/\r\n?/g, '\n')
+  t = t.replace(/\{\{[^{}]{1,160}\}\}/g, '')
+  t = t.replace(/<!--[\s\S]*?-->/g, '')
+  // 尖括号标签（含闭合）：<faction_武魂殿>、<rule_经济系统>、<worldview_detail_xxx> 等 ST 锚点
+  t = t.replace(/<\/?[a-zA-Z][^>]{0,80}>/g, '')
+  // 独立行的 --- 分隔线删除；保留正文缩进（设定文本层级依赖缩进）
+  t = t.split('\n').map((l) => (/^\s*-{3,}\s*$/.test(l) ? '' : l)).join('\n')
+  t = t.replace(/[ \t]+$/gm, '').replace(/\n{3,}/g, '\n\n')
+  return t.trim()
+}
+
+/**
+ * v3.5：导入人物卡时从 comment/key 提取显名，生成 payload（否则卡名靠 hook 顶替、
+ * 结构化字段全空）。取不到名返回 undefined（该卡由用户后续手动补）。
+ */
+export function guessCharacterName(e: any, key: string, hook?: string): string | undefined {
+  if (hook?.trim()) return hook.trim()
+  if (key) {
+    const first = key.split(/[,，]/).map((k) => k.trim()).filter(Boolean)[0]
+    if (first) return first
+  }
+  // 兜底：comment 里最后一个冒号后是显名（与 hook 提取同规则）；否则去 emoji/冒号前缀取首段
+  const c = String(e?.comment ?? '').trim()
+  const m = c.match(/[：:]\s*(.+?)$/)
+  if (m?.[1]?.trim()) return m[1].trim()
+  const c2 = c.replace(/^[\p{Emoji}\s·:：]+/u, '').trim()
+  const m2 = c2.match(/^([^：:]{1,20})/)
+  if (m2?.[1]?.trim()) return m2[1].trim()
   return undefined
 }
 
@@ -270,14 +313,44 @@ export const useDataStore = defineStore('data', {
         else if (e.key) key = Array.isArray(e.key) ? e.key.map(String).join(',') : String(e.key)
         // ST：constant=true → 常驻（key 置空）
         if (e.constant === true || e.constant === 'true') key = ''
-        const kind = guessKindFromComment(e.comment)
+        // v3.5：kind 支持规范显式声明（v2），缺省按 comment 粗分类
+        const KIND_SET = new Set(['character', 'location', 'item', 'event', 'rule', 'faction', 'timeline', 'note'])
+        const kind = (KIND_SET.has(String(e.kind ?? '')) ? String(e.kind) : guessKindFromComment(e.comment)) as NonNullable<Entry['kind']>
+        // v3.5：hook/timeline/isMain 支持规范显式字段；缺省从 comment 提取
+        const hook = (typeof e.hook === 'string' && e.hook.trim())
+          ? e.hook.trim()
+          : guessHookFromEntry(e, kind)
+        const timeline = e.timeline ? String(e.timeline).trim() || undefined : undefined
+        const isMain = (e.isMain === 1 || e.isMain === true) ? 1 : 0
+        // v3.5：人物卡 key 为空 → 补人物名做触发词（避免常驻全量注入）
+        const charName = kind === 'character' ? guessCharacterName(e, key, hook) : undefined
+        if (kind === 'character' && !key && charName) key = charName
+        // v3.5：payload 支持规范显式给定（v2）；人物卡缺 name 时自动补（保证卡面可显示）
+        let payloadJson: string | undefined
+        if (e.payload && typeof e.payload === 'object' && !Array.isArray(e.payload)) {
+          payloadJson = JSON.stringify(e.payload)
+        }
+        if (kind === 'character') {
+          const p = parseCharacterPayload(payloadJson)
+          if (!p.name?.trim()) {
+            const nm = charName ?? (key ? key.split(/[,，]/)[0].trim() : '')
+            if (nm && nm !== '未命名') {
+              p.name = nm
+              payloadJson = characterPayloadJson(p)
+            }
+          }
+        }
         await db.entries.add(plain({
           worldbookId: wbId,
           kind,
           // v3.2：抖罗锚点条目的 hook 从 comment 提取（「👤斗三：唐舞桐」→ 人物名）
-          hook: guessHookFromEntry(e, kind),
+          hook,
           key,
-          content: String(e.content),
+          payloadJson,
+          timeline,
+          isMain: kind === 'character' ? isMain : undefined,
+          // v3.5：ST 原文清洗（宏/标签/分隔线），避免卡片 UI 显示违和的英文结构
+          content: cleanImportedContent(String(e.content)),
           enabled: e.enabled === false ? 0 : 1,
           source: 'imported',
           createdAt: Date.now(), updatedAt: Date.now(),
@@ -286,16 +359,30 @@ export const useDataStore = defineStore('data', {
       }
 
       // characters / relations（可选）
+      // v3.5：characters 老格式 → kind=character 人物卡条目（进卡体系；绑定/入笔记簿即见）
       let charCount = 0, relCount = 0
-      if (campaignId && Array.isArray(data.characters)) {
+      if (Array.isArray(data.characters)) {
         for (const c of data.characters) {
           if (!c?.name) continue
-          await db.characters.add(plain({
-            campaignId,
-            name: String(c.name),
-            identity: c.identity ? String(c.identity) : '',
-            description: c.description ? String(c.description) : '',
-            source: 'ai',
+          const nm = String(c.name).trim()
+          const p = parseCharacterPayload('')
+          p.name = nm
+          p.identity = c.identity ? String(c.identity).trim() || undefined : undefined
+          p.realm = c.realm ? String(c.realm).trim() || undefined : undefined
+          if (Array.isArray(c.attributes)) {
+            p.attributes = c.attributes
+              .filter((a: any) => a?.label?.trim() && typeof a.value === 'number')
+              .map((a: any) => ({ label: String(a.label).trim(), value: Math.max(0, Math.min(100, Math.round(a.value))) }))
+          }
+          await db.entries.add(plain({
+            worldbookId: wbId,
+            kind: 'character',
+            hook: p.identity ? `${nm}：${p.identity}` : nm,
+            key: nm,
+            payloadJson: characterPayloadJson(p),
+            content: cleanImportedContent(String(c.description ?? '')),
+            enabled: 1,
+            source: 'imported',
             createdAt: Date.now(), updatedAt: Date.now(),
           }))
           charCount++
